@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import com.music.bitchord.ui.icons.SfIcons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Link
@@ -123,6 +124,20 @@ fun PlaylistPickerSheet(
     onCreateMixed: ((String) -> Unit)? = null,
 ) {
     var creating by remember { mutableStateOf(startCreating) }
+    // Mixed playlists are offered alongside the others wherever a song is filed.
+    // Picking one downloads the song(s) into it instead of calling [onAdd].
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val mixedStore by com.music.bitchord.mixed.MixedPlaylists.playlists.collectAsStateWithLifecycle()
+    val allPlaylists = remember(playlists, mixedStore) {
+        playlists + mixedStore.map {
+            UserPlaylist(
+                playlistId = it.browseId,
+                title = it.title,
+                subtitle = "${it.songs.size} tracks · Mixed",
+                thumbnailUrl = it.coverUrl,
+            )
+        }
+    }
     // By id rather than by value: the list is re-fetched under an open sheet,
     // and a refreshed row must stay ticked.
     var selected by remember { mutableStateOf(emptySet<String>()) }
@@ -191,7 +206,24 @@ fun PlaylistPickerSheet(
                         pluralStringResource(R.plurals.add_to_playlists_count, selected.size, selected.size)
                     },
                     confirmEnabled = selected.isNotEmpty(),
-                    onConfirm = { closeAfter { onAdd(playlists.filter { it.playlistId in selected }) } },
+                    onConfirm = {
+                        closeAfter {
+                            val picked = allPlaylists.filter { it.playlistId in selected }
+                            val (mixedPicked, otherPicked) = picked.partition { com.music.bitchord.mixed.MixedPlaylists.isMixed(it.playlistId) }
+                            val toAdd = if (songs.isNotEmpty()) songs else listOfNotNull(song)
+                            if (mixedPicked.isNotEmpty() && toAdd.isNotEmpty()) {
+                                mixedPicked.forEach {
+                                    com.music.bitchord.mixed.MixedPlaylists.addSongs(com.music.bitchord.mixed.MixedPlaylists.idOf(it.playlistId), toAdd)
+                                }
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Added to ${mixedPicked.size} mixed playlist${if (mixedPicked.size == 1) "" else "s"} — downloading the song${if (toAdd.size == 1) "" else "s"}",
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                            if (otherPicked.isNotEmpty()) onAdd(otherPicked)
+                        }
+                    },
                 )
                 if (songs.isNotEmpty()) {
                     Text(
@@ -220,7 +252,7 @@ fun PlaylistPickerSheet(
                     // Only while there is nothing to show: re-fetching under a
                     // list that is already up would replace it with a spinner
                     // for no gain.
-                    loading && playlists.isEmpty() -> Box(
+                    loading && allPlaylists.isEmpty() -> Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(120.dp),
@@ -232,7 +264,7 @@ fun PlaylistPickerSheet(
                         )
                     }
 
-                    playlists.isEmpty() -> Text(
+                    allPlaylists.isEmpty() -> Text(
                         text = stringResource(R.string.no_playlists_yet),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -241,7 +273,7 @@ fun PlaylistPickerSheet(
 
                     else -> {
                         PlaylistSearchField(query = query, onQueryChange = { query = it })
-                        val shown = remember(playlists, query) { filterPlaylists(playlists, query) { it.title } }
+                        val shown = remember(allPlaylists, query) { filterPlaylists(allPlaylists, query) { it.title } }
                         if (shown.isEmpty()) {
                             Text(
                                 text = stringResource(R.string.no_playlists_match, query.trim()),

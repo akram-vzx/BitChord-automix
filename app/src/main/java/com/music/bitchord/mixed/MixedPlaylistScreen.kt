@@ -181,6 +181,16 @@ fun MixedPlaylistScreen(
                     },
                 )
             }
+            if (songs.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        "No songs yet. Open the ⋮ menu of any song, choose Add to playlist and tick this playlist. Each song is downloaded first, then measured for tempo and key.",
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
             itemsIndexed(songs, key = { _, song -> song.videoId }) { index, song ->
                 val next = songs.getOrNull(index + 1)
                 val shift = when {
