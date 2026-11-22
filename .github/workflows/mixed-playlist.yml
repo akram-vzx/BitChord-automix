@@ -20,18 +20,45 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Setup Secrets (Keystore & local.properties)
+    - name: Setup local.properties
       run: |
         echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
         echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
         echo "LISTEN_TOGETHER_SERVER=${{ secrets.LISTEN_TOGETHER_SERVER }}" >> local.properties
 
-        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > bitchord-release.jks
+    # This build is a separate app (its own package), so it does not need the
+    # original app's key. It signs with a key made here once and kept in the
+    # Actions cache, so every later build is signed the same way and installs
+    # over the previous one. If the cache is ever evicted (unused for 7 days) a
+    # new key is made, and the next install needs the old build uninstalled first.
+    - name: Restore signing key
+      id: restore-key
+      uses: actions/cache/restore@v4
+      with:
+        path: bitchord-mix.jks
+        key: mix-signing-key-v1
+
+    - name: Create signing key (first run only)
+      if: steps.restore-key.outputs.cache-hit != 'true'
+      run: |
+        keytool -genkeypair -alias mix -keyalg RSA -keysize 2048 -validity 36500 \
+          -keystore bitchord-mix.jks -storepass mixpass123 -keypass mixpass123 \
+          -dname "CN=BitChord Mix, O=BitChord, C=DZ"
+
+    - name: Save signing key
+      if: steps.restore-key.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: bitchord-mix.jks
+        key: mix-signing-key-v1
+
+    - name: Write keystore.properties
+      run: |
         {
-          echo "storeFile=bitchord-release.jks"
-          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}"
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
+          echo "storeFile=bitchord-mix.jks"
+          echo "storePassword=mixpass123"
+          echo "keyAlias=mix"
+          echo "keyPassword=mixpass123"
         } > keystore.properties
 
     - name: Grant execute permission for gradlew
