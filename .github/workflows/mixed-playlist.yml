@@ -1,0 +1,48 @@
+name: Mixed playlist APK
+
+on:
+  push:
+    branches: [mixed-playlist]
+  workflow_dispatch:
+
+jobs:
+  build-mix-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Setup Secrets (Keystore & local.properties)
+      run: |
+        echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+        echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+        echo "LISTEN_TOGETHER_SERVER=${{ secrets.LISTEN_TOGETHER_SERVER }}" >> local.properties
+
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > bitchord-release.jks
+        {
+          echo "storeFile=bitchord-release.jks"
+          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}"
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
+        } > keystore.properties
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    # The watch app is left out: it is built per flavor and there is no "mix" one.
+    - name: Build Signed Mix Release APK
+      run: ./gradlew assembleMixRelease -Pbitchord.bundleWear=false
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: bitchord-mix-release-signed
+        path: app/build/outputs/apk/mix/release/*.apk

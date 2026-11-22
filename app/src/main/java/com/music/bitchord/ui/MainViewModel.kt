@@ -3178,6 +3178,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         fun nonEmpty(songs: List<Song>, empty: () -> String): UiState<List<Song>> =
             if (songs.isEmpty()) UiState.Error(empty()) else UiState.Success(songs)
 
+        if (com.music.bitchord.mixed.MixedPlaylists.isMixed(browseId)) {
+            // The page draws itself from the store; this only has to say it exists.
+            val mixed = com.music.bitchord.mixed.MixedPlaylists.get(browseId) ?: return UiState.Error(text(R.string.no_tracks_here))
+            return UiState.Success(mixed.ready)
+        }
         if (OfflinePlaylists.isOfflinePlaylist(browseId)) {
             // A playlist deleted while its page was still reachable — from
             // "Playing from", say — is an empty page, not a YouTube lookup.

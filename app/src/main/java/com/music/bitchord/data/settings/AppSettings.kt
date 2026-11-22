@@ -996,6 +996,7 @@ object AppSettings {
             context,
             likedTitle = context.getString(com.music.bitchord.R.string.auto_liked),
         )
+        com.music.bitchord.mixed.MixedPlaylists.init(context)
         readAll()
         watchConnection(context)
     }

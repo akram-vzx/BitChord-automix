@@ -72,11 +72,11 @@ class TrackAnalyzer(private val context: Context, private val cache: AudioCache)
             java.io.File(context.filesDir, BeatTracker.RETIRED_MODEL_ASSET).delete()
             AutomixModels.path(AutomixModels.BEAT)
         },
-        inferenceThreads = { AppSettings.automixPerformanceMode.value.inferenceThreads },
+        inferenceThreads = { com.music.bitchord.mixed.AutomixEffort.effective().inferenceThreads },
     )
     private val vocals = VocalTracker(
         modelPath = { AutomixModels.path(AutomixModels.VOCALS) },
-        inferenceThreads = { AppSettings.automixPerformanceMode.value.inferenceThreads },
+        inferenceThreads = { com.music.bitchord.mixed.AutomixEffort.effective().inferenceThreads },
     )
 
     init {
@@ -403,7 +403,7 @@ class TrackAnalyzer(private val context: Context, private val cache: AudioCache)
                 // Efficient mode yields to decoding and playback rather than
                 // competing for a core. Thread count remains the speed knob.
                 Process.setThreadPriority(
-                    if (AppSettings.automixPerformanceMode.value == AutomixPerformanceMode.EFFICIENT) {
+                    if (com.music.bitchord.mixed.AutomixEffort.effective() == AutomixPerformanceMode.EFFICIENT) {
                         Process.THREAD_PRIORITY_BACKGROUND
                     } else {
                         Process.THREAD_PRIORITY_DEFAULT

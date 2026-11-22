@@ -1001,6 +1001,9 @@ internal fun ShelfCard(
                         modifier = Modifier.fillMaxSize(),
                     )
                     if (isCurrent && isPlaying) SearchPlayingBars(Modifier.align(Alignment.Center))
+                    if (item.browseId?.startsWith("local:mixed:") == true) {
+                        com.music.bitchord.ui.components.MixedGoldLabel(Modifier.align(Alignment.BottomStart))
+                    }
                 }
             }
         }

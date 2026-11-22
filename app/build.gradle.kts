@@ -147,6 +147,14 @@ android {
             dimension = "env"
             // Matches defaultConfig — this is the package already shipped/installed.
         }
+        // The mixed-playlists build: its own package, so it installs beside the
+        // prod and dev apps instead of replacing either. Built without the watch
+        // app (-Pbitchord.bundleWear=false) — there is no wearos "mix" flavor.
+        create("mix") {
+            dimension = "env"
+            applicationId = "com.akram.bitchord.mixed"
+            resValue("string", "app_name", "BitChord Mix")
+        }
     }
 
     signingConfigs {

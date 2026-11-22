@@ -24,6 +24,9 @@ import com.music.bitchord.playback.loopmix.LoopMixPort
 import com.music.bitchord.playback.loopmix.LoopMixRenderer
 import com.music.bitchord.playback.loopmix.LoopMixSession
 import com.music.bitchord.playback.loopmix.LoopRegion
+import com.music.bitchord.mixed.ManualMix
+import com.music.bitchord.mixed.MixedJoin
+import com.music.bitchord.mixed.MixedPlayback
 import com.music.bitchord.playback.smart.CrossfadeMode
 import com.music.bitchord.playback.smart.LoopMix
 import com.music.bitchord.playback.smart.FILTER_ECHO_AT
@@ -420,6 +423,8 @@ class CrossfadeController(
         lockPhase: Boolean = false,
         /** The plan's echo time; 0 for no echo out. */
         echoSeconds: Double = 0.0,
+        /** Set for a mixed playlist's join: the lanes the listener (or the analyser) drew, in place of the style's own. */
+        val manual: ManualMix? = null,
     ) {
         private val grid = if (advanced && beats >= 2.0) beats else 0.0
         val clash = vocalOverlap.coerceIn(0.0, 1.0)
@@ -1093,7 +1098,7 @@ class CrossfadeController(
         // length: it decides its own duration from each pair of tracks (beats,
         // tempo, structure), so requiring a nonzero [AppSettings.crossfadeSeconds]
         // first would tie an automatic feature to a manual one it doesn't use.
-        if (AppSettings.smartFadeEnabled.value) {
+        if (AppSettings.smartFadeEnabled.value || mixedJoinFor(player) != null) {
             considerSmartTransition(duration)
             return
         }
@@ -1175,7 +1180,18 @@ class CrossfadeController(
         // The DJ planner is Automix now; there is no separate mode switch.
         val advanced = true
 
-        val plan = planTransition(
+        // A mixed playlist's own join: nothing yet means a plain handover, a stored
+        // one replaces the planner's choice altogether.
+        val mixedJoin = mixedJoinFor(player)
+        if (mixedJoin != null && mixedJoin.transition.mix == null) {
+            AppSettings.smartTransitionWindow.value = null
+            return
+        }
+        val manualMix = mixedJoin?.transition?.mix
+
+        val plan = if (manualMix != null) {
+            MixedPlayback.planFor(manualMix, currentAnalysis, nextAnalysis, duration / 1000.0)
+        } else planTransition(
             analysis = currentAnalysis,
             nextAnalysis = nextAnalysis,
             currentTrack = currentItem.toTransitionInfo(duration),
@@ -1208,7 +1224,9 @@ class CrossfadeController(
         publishMixPreview(currentItem, nextItem, duration, nextDuration, currentAnalysis, nextAnalysis, analysisState, plan, advanced)
 
         // The loop mix first: a pair it can do never reaches the blend below.
-        val loop = loopPlanFor(
+        val loop = if (manualMix != null) {
+            MixedPlayback.loopPlanFor(manualMix, currentAnalysis, nextAnalysis, duration / 1000.0, nextDuration / 1000.0)
+        } else loopPlanFor(
             player, currentItem, nextItem, currentAnalysis, nextAnalysis, duration, nextDuration, analysisState,
         )
         if (loop != null && nextStreamReady(nextItem)) {
@@ -1329,12 +1347,12 @@ class CrossfadeController(
             playbackRate = plan.incomingPlaybackRate,
             outgoingRate = plan.outgoingPlaybackRate,
             beatMs = beatMs,
-            renderStyle = renderFor(plan, advanced),
+            renderStyle = renderFor(plan, advanced, manualMix),
             plan = plan,
         )
     }
 
-    private fun renderFor(plan: TransitionPlan, advanced: Boolean) = Render(
+    private fun renderFor(plan: TransitionPlan, advanced: Boolean, manual: ManualMix? = null) = Render(
         style = plan.transitionStyle,
         bassSwap = plan.bassSwap,
         bassSwapFraction = plan.bassSwapFraction,
@@ -1345,6 +1363,7 @@ class CrossfadeController(
         beats = if (plan.beatSeconds > 0) plan.fadeSeconds / plan.beatSeconds else 0.0,
         lockPhase = plan.phaseLock,
         echoSeconds = plan.echoSeconds,
+        manual = manual,
     )
 
     /**
@@ -3294,6 +3313,7 @@ class CrossfadeController(
      * locked: a pause parks the filter exactly where it parks the fade.
      */
     private fun rideStyle(progress: Float) {
+        render.manual?.let { rideManual(it, progress); return }
         when (render.style) {
             TransitionStyle.DJ_FILTER -> when (render.filterVariant) {
                 FilterTransitionVariant.BASS_HANDOFF -> rideFallbackBassHandoff(progress)
@@ -3356,7 +3376,7 @@ class CrossfadeController(
      * just as a dry signal would.
      */
     private fun outgoingLevel(progress: Float, wallSpan: Float): Float {
-        if (!render.echo) return mixFall(progress)
+        if (!render.echo || render.manual != null) return mixFall(progress)
         val sinceEcho = (progress - render.echoAt.toFloat()) * wallSpan
         val repeats = if (sinceEcho > 0f) sinceEcho / (render.echoSecondsF * 1000f) else 0f
         val wet = if (sinceEcho > 0f) ECHO_LEVEL * ECHO_DECAY.pow(repeats) else 0f
@@ -3523,6 +3543,36 @@ class CrossfadeController(
      * moving in equal Hz steps sounds like it lurches through the bottom of its
      * range and crawls through the top.
      */
+    /** The join of the playing track and the next, when they are neighbours in the mixed playlist being played. */
+    private fun mixedJoinFor(player: ExoPlayer): MixedJoin? {
+        val current = player.currentMediaItem ?: return null
+        val nextIndex = player.nextMediaItemIndex
+        if (nextIndex == C.INDEX_UNSET) return null
+        return MixedPlayback.joinFor(current.mediaId, player.getMediaItemAt(nextIndex).mediaId)
+    }
+
+    /**
+     * A mixed playlist's blend: every lane of the mix read at this point in it
+     * and put on its deck. Low pass runs from fully open down to a muffled
+     * 250Hz; high pass from off up to 1.5kHz; the bass lane is the existing
+     * bass cut, so a bass swap here sounds exactly as it does in Automix.
+     */
+    private fun rideManual(mix: ManualMix, progress: Float) {
+        val p = progress.coerceIn(0f, 1f)
+        fun lowPass(open: Float): Float =
+            glide(TransitionFilterProcessor.OPEN_HZ.toDouble(), 250.0, 1.0 - open.toDouble()).toFloat()
+        fun highPass(open: Float): Float =
+            glide(TransitionFilterProcessor.OFF_HZ.toDouble(), 1500.0, 1.0 - open.toDouble()).toFloat()
+        val outHigh = maxOf(bassCutoff(1.0 - mix.bassOut.at(p).toDouble()), highPass(mix.hpOut.at(p)))
+        val inHigh = maxOf(bassCutoff(1.0 - mix.bassIn.at(p).toDouble()), highPass(mix.hpIn.at(p)))
+        tracks.outgoing(lowPass(mix.lpOut.at(p)), outHigh)
+        tracks.incoming(lowPass(mix.lpIn.at(p)), inHigh)
+        if (render.echo) {
+            val send = mix.echoOut.at(p)
+            if (send > 0.01f) tracks.outgoingEcho(render.echoSecondsF, send, mix.volumeOut.at(p))
+        }
+    }
+
     private fun glide(from: Double, to: Double, amount: Double): Double =
         from * (to / from).pow(amount.coerceIn(0.0, 1.0))
 
@@ -3636,6 +3686,7 @@ class CrossfadeController(
      * [headroomFor] keeps two faders at full from summing past full scale.
      */
     private fun mixRise(progress: Float): Float {
+        render.manual?.let { return it.volumeIn.at(progress) }
         if (!render.advanced) return riseGain(progress)
         val styled = when (render.style) {
             TransitionStyle.DJ_BLEND ->
@@ -3657,6 +3708,8 @@ class CrossfadeController(
      * low-pass is already taking it away.
      */
     private fun mixFall(progress: Float): Float {
+        // With an echo the dry signal is faded in the chain, so the fader holds — see [rideManual].
+        render.manual?.let { return if (render.echo) 1f else it.volumeOut.at(progress) }
         if (!render.advanced) return fallGain(progress)
         // The fader carries the repeats too, so an echo out leaves it up and
         // fades the dry signal in the chain instead — see [rideEchoOut].

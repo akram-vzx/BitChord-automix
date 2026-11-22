@@ -31,6 +31,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import com.music.bitchord.ui.icons.SfIcons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Link
@@ -118,6 +119,8 @@ fun PlaylistPickerSheet(
     offline: Boolean = false,
     headerTitle: String? = null,
     songs: List<Song> = emptyList(),
+    /** When set, the new-playlist form offers a Mixed playlist, and creating one calls this with its name instead of [onCreate]. */
+    onCreateMixed: ((String) -> Unit)? = null,
 ) {
     var creating by remember { mutableStateOf(startCreating) }
     // By id rather than by value: the list is re-fetched under an open sheet,
@@ -175,6 +178,7 @@ fun PlaylistPickerSheet(
                     onClose = { closeAfter {} },
                     onCreate = { name, privacy -> closeAfter { onCreate(name, privacy) } },
                     offline = offline,
+                    onCreateMixed = onCreateMixed?.let { create -> { name: String -> closeAfter { create(name) } } },
                 )
             } else {
                 SheetTopBar(
@@ -418,9 +422,11 @@ private fun NewPlaylistForm(
     onClose: () -> Unit,
     onCreate: (String, PlaylistPrivacy) -> Unit,
     offline: Boolean,
+    onCreateMixed: ((String) -> Unit)? = null,
 ) {
     var name by remember { mutableStateOf("") }
     var privacy by remember { mutableStateOf(PlaylistPrivacy.PRIVATE) }
+    var mixed by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
 
@@ -431,7 +437,7 @@ private fun NewPlaylistForm(
     val submit: () -> Unit = {
         if (name.isNotBlank()) {
             focusManager.clearFocus()
-            onCreate(name, privacy)
+            if (mixed && onCreateMixed != null) onCreateMixed(name) else onCreate(name, privacy)
         }
     }
 
@@ -455,7 +461,7 @@ private fun NewPlaylistForm(
                     )
                     Text(
                         text = stringResource(
-                            if (offline) R.string.saved_on_this_device else R.string.saved_to_youtube_music_account,
+                            if (offline || mixed) R.string.saved_on_this_device else R.string.saved_to_youtube_music_account,
                         ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -527,8 +533,31 @@ private fun NewPlaylistForm(
                     PrivacyPill(
                         icon = option.icon,
                         label = option.label,
-                        selected = option == privacy,
-                        onClick = { privacy = option },
+                        selected = option == privacy && !mixed,
+                        onClick = { privacy = option; mixed = false },
+                    )
+                }
+            }
+            // A mixed playlist is a playlist on the device whose songs are mixed into one another.
+            if (onCreateMixed != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp, vertical = 4.dp),
+                ) {
+                    PrivacyPill(
+                        icon = Icons.Rounded.AutoAwesome,
+                        label = "Mixed playlist",
+                        selected = mixed,
+                        onClick = { mixed = !mixed },
+                    )
+                }
+                if (mixed) {
+                    Text(
+                        text = "This playlist is offline. Its songs are downloaded to this device, and the only way to move it to another device is through a backup.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp),
                     )
                 }
             }

@@ -1076,6 +1076,17 @@ private fun BitChordApp(
             browseId = playlist.browseId,
         )
     }
+    // Mixed playlists sit on the same shelf, marked "Mixed" in gold on their cover.
+    val mixedPlaylists by com.music.bitchord.mixed.MixedPlaylists.playlists.collectAsStateWithLifecycle()
+    val mixedPlaylistItems = mixedPlaylists.map { playlist ->
+        ShelfItem(
+            title = playlist.title,
+            subtitle = "${playlist.songs.size} tracks · Mixed",
+            thumbnailUrl = playlist.coverUrl,
+            videoId = null,
+            browseId = playlist.browseId,
+        )
+    }
     // What a browse id is recorded under in Downloads.collections, when it names
     // a release downloaded whole — see BrowseTarget.downloadId. A downloaded
     // playlist's own page and its card both carry the id under the
@@ -1588,6 +1599,9 @@ private fun BitChordApp(
         if (allSongs.getOrNull(allIndex)?.isUnresolvedSpotify == true) return
         val songs = allSongs.filterNot { it.isUnresolvedSpotify }
         val index = songs.indexOf(allSongs.getOrNull(allIndex)).coerceAtLeast(0)
+        // Anything that is not a mixed playlist's own page ends the mixed playback: its joins
+        // and its full-effort analysis belong to that playlist alone.
+        if (!com.music.bitchord.mixed.MixedPlaylists.isMixed(source.id)) com.music.bitchord.mixed.MixedPlayback.activate(null)
         playRequestGeneration++
         activeRadioSeed = null
         scope.launch {
@@ -3442,7 +3456,34 @@ private fun BitChordApp(
                             }
                             // This page's songs being rearranged, drawn in place of its list.
                             val reordering = reorderTarget?.takeIf { it.browseId == page.browseId }
-                            DetailScreen(
+                            if (com.music.bitchord.mixed.MixedPlaylists.isMixed(page.browseId)) {
+                                // A mixed playlist has its own page: the songs in Spotify's layout, with the joins between them.
+                                com.music.bitchord.mixed.MixedPlaylistScreen(
+                                    browseId = page.browseId,
+                                    currentVideoId = player.song?.videoId,
+                                    isPlaying = player.isPlaying,
+                                    contentPadding = listPadding,
+                                    onBack = { navigator.pop() },
+                                    onPlay = { songs, index ->
+                                        playFrom(songs, index, QueueSource(page.title, PlaybackSourceType.BROWSE, page.browseId))
+                                    },
+                                    onPreview = { songs, index, positionMs ->
+                                        playFrom(songs, index, QueueSource(page.title, PlaybackSourceType.BROWSE, page.browseId))
+                                        scope.launch {
+                                            // The queue is built asynchronously; wait for the song, then jump to the blend.
+                                            val wanted = songs.getOrNull(index)?.videoId
+                                            var tries = 0
+                                            while (tries < 40 && controller?.currentMediaItem?.mediaId != wanted) {
+                                                kotlinx.coroutines.delay(100)
+                                                tries++
+                                            }
+                                            controller?.seekTo(positionMs)
+                                            controller?.play()
+                                        }
+                                    },
+                                    onStopPreview = { controller?.pause() },
+                                )
+                            } else DetailScreen(
                                 page = page,
                                 currentSong = player.song,
                                 isPlaying = player.isPlaying,
@@ -3900,7 +3941,7 @@ private fun BitChordApp(
                                 pullState = libraryPull,
                                 contentPadding = listPadding,
                                 links = libraryLinks(),
-                                deviceItems = libraryDeviceItems(downloadedReleases) + localPlaylistItems,
+                                deviceItems = libraryDeviceItems(downloadedReleases) + localPlaylistItems + mixedPlaylistItems,
                             )
                         }
                     }
@@ -5237,6 +5278,12 @@ private fun BitChordApp(
                 onCreate = { title, privacy ->
                     viewModel.createPlaylist(title, privacy, target)
                 },
+                onCreateMixed = { title ->
+                    val created = com.music.bitchord.mixed.MixedPlaylists.create(title)
+                    // The song it was opened for goes in too: downloaded first, then added.
+                    target?.let { com.music.bitchord.mixed.MixedPlaylists.addSongs(created.id, listOf(it)) }
+                    showQueueNotice("Mixed playlist created")
+                },
             )
         }
 
@@ -6528,7 +6575,7 @@ private fun SongSort.localizedLabel(): String = when (this) {
 private fun String?.isDeviceFolder(): Boolean =
     this != null && startsWith("local:") &&
         !startsWith(Downloads.PLAYLIST_PREFIX) && !startsWith(LocalGroups.PREFIX) &&
-        !startsWith(OfflinePlaylists.PREFIX)
+        !startsWith(OfflinePlaylists.PREFIX) && !startsWith(com.music.bitchord.mixed.MixedPlaylists.PREFIX)
 
 /**
  * Whether [videoId] is the track playing, and is known to be playing YouTube's

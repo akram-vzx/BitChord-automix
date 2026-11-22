@@ -710,7 +710,7 @@ class PlaybackService : MediaLibraryService() {
         if (activeFilter === transitionFilterA) loudnessB else loudnessA
 
     /** Automix's DSP analyzer — see [com.music.bitchord.playback.smart.TrackAnalyzer]. */
-    private val trackAnalyzer = com.music.bitchord.playback.smart.TrackAnalyzer(this, AudioCache)
+    private val trackAnalyzer by lazy { com.music.bitchord.playback.smart.SharedTrackAnalyzer.get(applicationContext) }
 
     /** Shared with the crossfade's tail player, so both read the same disk cache. */
     private var mediaSourceFactory: DefaultMediaSourceFactory? = null
@@ -8631,7 +8631,7 @@ class PlaybackService : MediaLibraryService() {
         serviceLyricsJob = null
         serviceLyrics = null
         cancelPrefetch()
-        trackAnalyzer.release()
+        com.music.bitchord.playback.smart.SharedTrackAnalyzer.release()
         loudnessRetryJob?.cancel()
         // The YouTube Music history entry for whatever was playing, closed out
         // on the same terms as the ListenBrainz submit below: a swipe-away never

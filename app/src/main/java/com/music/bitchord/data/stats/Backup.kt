@@ -96,6 +96,7 @@ object Backup {
                 PrefValue.of(value)?.let { key to it }
             }.toMap(),
             listening = buckets,
+            mixedPlaylists = com.music.bitchord.mixed.MixedPlaylists.exportJson(),
         )
         (if (pretty) json else compactJson).encodeToStream(BackupFile.serializer(), file, out)
         out.flush()
@@ -137,6 +138,7 @@ object Backup {
         // Shares AppSettings' preference file, so it has already been
         // overwritten by the line above — it just doesn't know yet.
         SearchHistory.reload()
+        com.music.bitchord.mixed.MixedPlaylists.importJson(file.mixedPlaylists)
         Summary(
             months = file.listening.size,
             settings = file.settings.size,
@@ -171,6 +173,8 @@ object Backup {
         val exportedAt: String = "",
         val settings: Map<String, PrefValue> = emptyMap(),
         val listening: List<StoredBucket> = emptyList(),
+        /** Mixed playlists and their transitions, as the store writes them; the songs download again on restore. */
+        val mixedPlaylists: String? = null,
     )
 
     /** One preference, with the type it has to be restored as. */
