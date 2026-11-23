@@ -103,6 +103,7 @@ fun MixedPlaylistScreen(
     onPlay: (songs: List<Song>, index: Int) -> Unit,
     onPreview: (songs: List<Song>, index: Int, positionMs: Long) -> Unit,
     onStopPreview: () -> Unit,
+    playhead: () -> Triple<String?, Long, Boolean>,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -139,6 +140,11 @@ fun MixedPlaylistScreen(
         if (a != null && b != null) a to b else null
     }
     BackHandler(enabled = editorPair == null) { onBack() }
+    // The app's own page controls (search, sort, more) float above every page; they would sit on the editor's buttons.
+    DisposableEffect(editorPair != null) {
+        MixedUiState.setEditorOpen(editorPair != null)
+        onDispose { MixedUiState.setEditorOpen(false) }
+    }
 
     val songCount by rememberUpdatedState(songs.size)
     val listState = rememberLazyListState()
@@ -222,6 +228,7 @@ fun MixedPlaylistScreen(
                     Modifier
                         .zIndex(if (index == dragFrom) 1f else 0f)
                         .graphicsLayer { translationY = shift }
+                        .cadence { RowTouch.pulse(context) }
                         .then(
                             if (index == dragFrom) Modifier.shadow(8.dp, RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
@@ -327,6 +334,7 @@ fun MixedPlaylistScreen(
                 onPreview(listOf(a, b), 0, positionMs)
             },
             onStopPreview = onStopPreview,
+            playhead = playhead,
         )
     }
 

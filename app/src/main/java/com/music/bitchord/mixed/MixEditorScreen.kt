@@ -1,6 +1,7 @@
 package com.music.bitchord.mixed
 
 import android.net.Uri
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -83,6 +84,7 @@ import com.music.bitchord.data.model.Song
 import com.music.bitchord.playback.smart.MixWaveform
 import com.music.bitchord.playback.smart.SharedTrackAnalyzer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -135,6 +137,8 @@ fun MixEditorScreen(
     onClose: () -> Unit,
     onPreview: (positionMs: Long, mix: ManualMix) -> Unit,
     onStopPreview: () -> Unit,
+    /** The song now playing, its position in ms, and whether it is running — for the moving cursor. */
+    playhead: () -> Triple<String?, Long, Boolean>,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -153,6 +157,40 @@ fun MixEditorScreen(
     var mix by remember { mutableStateOf(stored?.mix) }
     var dirty by remember { mutableStateOf(false) }
     var previewing by remember { mutableStateOf(false) }
+    val mixNow by rememberUpdatedState(mix)
+    var cursorT by remember { mutableStateOf(0.0) }
+    // The cursor follows the playing song. A loop mix is rendered apart from the player, whose own position
+    // no longer says where the blend is, so once the blend has begun the cursor runs on the clock instead.
+    LaunchedEffect(previewing) {
+        if (!previewing) return@LaunchedEffect
+        var wallRef = 0L
+        var haveRef = false
+        var lastNow = SystemClock.elapsedRealtime()
+        while (true) {
+            val m = mixNow ?: break
+            val (id, position, playing) = playhead()
+            val now = SystemClock.elapsedRealtime()
+            when (id) {
+                from.videoId -> {
+                    val into = position / 1000.0 - m.outStartSec
+                    if (m.usesLoops && into >= 0.0) {
+                        if (!haveRef) {
+                            wallRef = now - (into * 1000).toLong()
+                            haveRef = true
+                        }
+                        if (!playing) wallRef += now - lastNow
+                        cursorT = (now - wallRef) / 1000.0
+                    } else {
+                        haveRef = false
+                        cursorT = into
+                    }
+                }
+                to.videoId -> cursorT = (position / 1000.0 - m.inCueSec) / m.incomingRate.coerceAtLeast(0.1)
+            }
+            lastNow = now
+            delay(33)
+        }
+    }
     var barsMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var discard by remember { mutableStateOf(false) }
@@ -286,6 +324,7 @@ fun MixEditorScreen(
             waveB = waveB,
             editingLane = editingLane,
             previewing = previewing,
+            cursorSeconds = (if (previewing) cursorT else -(current.lengthSec * VIEW_LEAD_FRACTION)).toFloat(),
             onChange = { change(it) },
             onSnap = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
             onPickLane = { lane, x ->
@@ -300,7 +339,9 @@ fun MixEditorScreen(
                     onStopPreview()
                 } else {
                     previewing = true
-                    onPreview(max(0L, ((current.outStartSec - PREVIEW_LEAD_SECONDS) * 1000).toLong()), current)
+                    val lead = current.lengthSec * VIEW_LEAD_FRACTION
+                    cursorT = -lead
+                    onPreview(max(0L, ((current.outStartSec - lead) * 1000).toLong()), current)
                 }
             },
             barsMenu = barsMenu,
@@ -402,7 +443,7 @@ fun MixEditorScreen(
                     }
                     if (tool == MixTool.LOOPING) {
                         Text(
-                            "Loops work in whole bars (4 beats), so the shortest is 4 beats. A loop turns the blend into a loop mix: the loop repeats while the tempo is brought together.",
+                            "The first 1, 2, 4 or 8 beats of the blend on the outgoing song repeat all the way through it, so the song is that much longer in the mix. A loop locks the two songs to one tempo, and the renderer has no low pass or echo, so those two lines are silent while one plays.",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
@@ -439,6 +480,7 @@ private fun MixGraph(
     waveB: WaveSlice?,
     editingLane: Lane?,
     previewing: Boolean,
+    cursorSeconds: Float,
     onChange: (ManualMix) -> Unit,
     onSnap: () -> Unit,
     onPickLane: (Lane, Float) -> Unit,
@@ -564,35 +606,39 @@ private fun MixGraph(
 
         Canvas(Modifier.fillMaxSize().then(gestures)) {
             drawGraph(geometry, mix, gridA, gridB, waveA, waveB, editingLane)
+            drawCursor(geometry, cursorSeconds)
         }
 
-        // The audition button, in the gap between the decks.
-        Box(
-            Modifier
-                .align(Alignment.Center)
-                .size(width = 64.dp, height = 36.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color(0xFF3A3A40))
-                .clickable(onClick = onTogglePreview),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (previewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                contentDescription = if (previewing) "Stop" else "Preview",
-                tint = Color.White,
-            )
+        // The audition button: in the gap between the decks, or — while a line is being edited, so it is
+        // not in the way of the line — down where the bars label is.
+        val playButton: @Composable (Modifier) -> Unit = { modifier ->
+            Box(
+                modifier
+                    .size(width = 64.dp, height = 36.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF3A3A40))
+                    .clickable(onClick = onTogglePreview),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (previewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                    contentDescription = if (previewing) "Stop" else "Preview",
+                    tint = Color.White,
+                )
+            }
         }
+        if (editingLane == null) playButton(Modifier.align(Alignment.Center))
 
         // "8 bars", attached to the bottom of the window.
         val barsLabelX = with(androidx.compose.ui.platform.LocalDensity.current) { ((geometry.left + geometry.right) / 2f).toDp() }
-        Box(Modifier.align(Alignment.BottomStart).padding(start = (barsLabelX - 44.dp).coerceAtLeast(0.dp))) {
-            Row(
+        Box(Modifier.align(Alignment.BottomStart).padding(start = (barsLabelX - (if (editingLane == null) 44.dp else 32.dp)).coerceAtLeast(0.dp))) {
+            if (editingLane != null) playButton(Modifier) else Row(
                 Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0xFF2E2E33)).clickable { onBarsMenu(true) }
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("${mix.bars} bars", fontSize = 15.sp)
-                Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("${mix.bars} bars", fontSize = 15.sp, color = Color.White)
+                Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
             DropdownMenu(expanded = barsMenu, onDismissRequest = { onBarsMenu(false) }) {
                 BAR_OPTIONS.forEach { bars ->
@@ -682,6 +728,7 @@ private fun DrawScope.drawGraph(
     if (g.width <= 0f) return
     val step = 3.dp.toPx()
     val rate = mix.incomingRate
+    val loopLen = mix.loopBeats * mix.beatSec
 
     // Waveforms. The window is full strength, what lies outside it is dimmed.
     fun deck(top: Float, timeAt: (Float) -> Double, wave: WaveSlice?, grid: BeatGrid?, windowStartSec: Double, toWall: (Double) -> Float) {
@@ -732,7 +779,11 @@ private fun DrawScope.drawGraph(
 
     deck(
         top = g.topDeckTop,
-        timeAt = { x -> mix.outStartSec + (x - g.left) / g.pxPerSec },
+        // With a loop, the blend shows the looped beats copied one after another: the outgoing song is that much longer.
+        timeAt = { x ->
+            val into = ((x - g.left) / g.pxPerSec).toDouble()
+            if (loopLen > 0.0 && into >= 0.0) mix.outStartSec + into % loopLen else mix.outStartSec + into
+        },
         wave = waveA,
         grid = gridA,
         windowStartSec = mix.outStartSec,
@@ -747,27 +798,20 @@ private fun DrawScope.drawGraph(
         toWall = { t -> g.left + ((t - mix.inCueSec) / rate * g.pxPerSec).toFloat() },
     )
 
-    // Loop brackets.
-    if (mix.endingLoopBars > 0) {
-        val len = (mix.endingLoopBars * 4 * mix.beatSec * g.pxPerSec).toFloat()
-        drawRoundRect(
-            Color(0xFFFF9F0A),
-            topLeft = Offset(g.left, g.topDeckTop + 2f),
-            size = Size(min(len, g.right - g.left), g.deckHeight - 4f),
-            cornerRadius = CornerRadius(6.dp.toPx()),
-            style = Stroke(width = 3.dp.toPx()),
-        )
-    }
-    if (mix.startingLoopBars > 0) {
-        val beat = gridB?.beatSec ?: mix.beatSec
-        val len = (mix.startingLoopBars * 4 * beat / rate * g.pxPerSec).toFloat()
-        drawRoundRect(
-            Color(0xFFFF9F0A),
-            topLeft = Offset(g.left, g.bottomDeckTop + 2f),
-            size = Size(min(len, g.right - g.left), g.deckHeight - 4f),
-            cornerRadius = CornerRadius(6.dp.toPx()),
-            style = Stroke(width = 3.dp.toPx()),
-        )
+    // Where each copy of the loop begins.
+    if (loopLen > 0.0) {
+        var k = 0
+        while (k < 256) {
+            val x = g.left + (k * loopLen * g.pxPerSec).toFloat()
+            if (x >= g.right) break
+            drawLine(
+                Color(0xFFFF9F0A),
+                Offset(x, g.topDeckTop),
+                Offset(x, g.topDeckTop + g.deckHeight),
+                strokeWidth = if (k == 0) 3.dp.toPx() else 1.5.dp.toPx(),
+            )
+            k++
+        }
     }
 
     // Window border.
@@ -809,6 +853,18 @@ private fun DrawScope.drawGraph(
             }
         }
     }
+}
+
+/** The white line that moves over the waveforms as the blend plays; [seconds] is from the start of the blend. */
+private fun DrawScope.drawCursor(g: GraphGeometry, seconds: Float) {
+    if (g.pxPerSec <= 0f) return
+    val x = (g.left + seconds * g.pxPerSec).coerceIn(0f, g.width)
+    drawLine(
+        Color.White,
+        Offset(x, 0f),
+        Offset(x, g.bottomDeckTop + g.deckHeight),
+        strokeWidth = 2.5.dp.toPx(),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -934,4 +990,6 @@ private fun LaneEditorBar(
 
 private const val WAVE_SECONDS = 150.0
 private const val WAVE_BINS_PER_SECOND = 8
-private const val PREVIEW_LEAD_SECONDS = 6.0
+
+/** How much of the blend's length the waveform shows to the left of the window: where playback starts. */
+private const val VIEW_LEAD_FRACTION = 0.17 / (0.83 - 0.17)

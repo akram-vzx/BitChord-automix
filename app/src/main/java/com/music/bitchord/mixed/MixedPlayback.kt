@@ -1,5 +1,6 @@
 package com.music.bitchord.mixed
 
+import com.music.bitchord.playback.loopmix.LoopMixRenderer
 import com.music.bitchord.playback.smart.ECHO_REPEATS
 import com.music.bitchord.playback.smart.LoopMix
 import com.music.bitchord.playback.smart.MAX_ECHO_SECONDS
@@ -10,6 +11,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -112,10 +114,16 @@ object MixedPlayback {
     }
 
     /**
-     * The loop engine's plan for a mix that asks for loops, built from the
-     * listener's choice with the same arithmetic as [LoopMix.plan] uses for
-     * its own. A side the listener did not loop gets a two-bar loop at the same
-     * point, since the engine works on a pair of loops.
+     * The loop engine's plan for a mix with a loop: the outgoing song's
+     * [ManualMix.loopBeats] beats from the start of the blend repeat all the way
+     * through it, while the incoming song plays straight on from its cue.
+     *
+     * The engine's clock counts in beats, so a loop of 1, 2, 4 or 8 of them is
+     * just a [LoopMix.Pick] of that many beats; and the blend becomes one
+     * continuous tempo ramp from the outgoing song's tempo to the incoming one's
+     * (no loop of its own to enter, no exit to settle in). That ramp is also why a
+     * loop always lines the two songs up, whatever the Beatmatching switch says:
+     * both decks run on a single grid.
      */
     fun loopPlanFor(
         mix: ManualMix,
@@ -128,35 +136,70 @@ object MixedPlayback {
         val outBeat = mix.beatSec
         val inBeat = BeatGrid(incoming).beatSec
         if (outBeat <= 0.0 || inBeat <= 0.0) return null
-        val outBars = if (mix.endingLoopBars > 0) mix.endingLoopBars else DEFAULT_LOOP_BARS
-        val inBars = if (mix.startingLoopBars > 0) mix.startingLoopBars else DEFAULT_LOOP_BARS
 
+        val bars = mix.bars.coerceAtLeast(1)
+        val totalBeats = bars * 4
         val outStart = mix.outStartSec.coerceAtLeast(0.0)
-        val outEnd = outStart + outBars * 4 * outBeat
+        val outEnd = outStart + mix.loopBeats * outBeat
         val inStart = mix.inCueSec.coerceAtLeast(0.0)
-        val inEnd = inStart + inBars * 4 * inBeat
-        // Loops that would run off the end of their song are not loops.
-        if (outEnd > outgoingDurationSec - 0.25 || inEnd > incomingDurationSec - 0.25) return null
 
         val outBpm = 60.0 / outBeat
         val inBpm = 60.0 / inBeat
         val fold = doubleArrayOf(1.0, 2.0, 0.5).minByOrNull { abs(ln(inBpm / it / outBpm)) } ?: 1.0
-        val target = inBpm / fold
-        val rampBars = ceil(abs(target - outBpm) / LoopMix.MAX_BPM_PER_BAR).toInt()
-            .coerceIn(LoopMix.MIN_RAMP_BARS, LoopMix.MAX_RAMP_BARS)
-        val inLoopOutBars = inBars / fold
-        val totalBars = (ceil((LoopMix.ENTER_BARS + rampBars + LoopMix.EXIT_BARS) / inLoopOutBars) * inLoopOutBars).roundToInt()
+        val inBeats = (totalBeats * fold).roundToInt().coerceAtLeast(1)
+        val inEnd = inStart + inBeats * inBeat
+        // A loop or a blend that would run off the end of its song is not played.
+        if (outEnd > outgoingDurationSec - 0.25 || inEnd + LOOP_TAIL_SECONDS > incomingDurationSec) return null
 
         return LoopMix.Plan(
-            out = LoopMix.Pick(outStart, outEnd, outBars, outBeat, outBpm, 0.0, LoopMix.Check.MASK),
-            inn = LoopMix.Pick(inStart, inEnd, inBars, inBeat, inBpm, 0.0, LoopMix.Check.MASK),
+            out = LoopMix.Pick(outStart, outEnd, (mix.loopBeats / 4).coerceAtLeast(1), outBeat, outBpm, 0.0, LoopMix.Check.MASK, mix.loopBeats),
+            inn = LoopMix.Pick(inStart, inEnd, (inBeats / 4).coerceAtLeast(1), inBeat, inBpm, 0.0, LoopMix.Check.MASK, inBeats),
             fold = fold,
-            enterBars = LoopMix.ENTER_BARS,
-            rampBars = rampBars,
-            exitBars = totalBars - LoopMix.ENTER_BARS - rampBars,
-            totalBars = totalBars,
+            enterBars = 0,
+            rampBars = bars,
+            exitBars = 0,
+            totalBars = bars,
         )
     }
 
-    private const val DEFAULT_LOOP_BARS = 2
+    /**
+     * The renderer's gain, bass and high-pass envelopes drawn from the mix's own
+     * lanes, so a loop mix follows the same Volume, EQ and Filter the editor
+     * shows. Each lane is read at sixteen points across the blend, placed on the
+     * clock's beats so they stay right through the tempo ramp.
+     *
+     * The renderer has no low-pass or echo, so those two lanes are silent in a
+     * loop mix.
+     */
+    fun shapeFor(mix: ManualMix): (LoopMixRenderer, LoopMix.Clock) -> Unit = { renderer, clock ->
+        val steps = 16
+        val beats = clock.beats
+        fun timeAt(fraction: Float): Double {
+            val beat = (fraction * beats).toDouble()
+            val index = beat.toInt().coerceIn(0, beats - 1)
+            val into = beat - index
+            return clock.beatTimes[index] + (clock.beatTimes[index + 1] - clock.beatTimes[index]) * into
+        }
+        val times = DoubleArray(steps + 1) { timeAt(it / steps.toFloat()) }
+        fun sampled(curve: Curve, f: (Float) -> Float) = FloatArray(steps + 1) { f(curve.at(it / steps.toFloat())) }
+        val handover = LoopMix.HANDOVER_SEC
+        val cut = LoopMix.BASS_CUT_DB.toFloat()
+        val highPassSpan = (LoopMix.HIGH_PASS_TO_HZ / LoopMix.HIGH_PASS_FROM_HZ)
+        fun highPass(open: Float): Float = (LoopMix.HIGH_PASS_FROM_HZ * highPassSpan.pow((1f - open).toDouble())).toFloat()
+
+        // Outgoing: rises out of the song's own sound over the handover, follows the lane, and is silent at the release.
+        val outGain = sampled(mix.volumeOut) { it }
+        renderer.setEnvelope(
+            LoopMixRenderer.OUT, LoopMixRenderer.KIND_GAIN,
+            doubleArrayOf(-handover) + times + doubleArrayOf(clock.releaseAt + 0.04),
+            floatArrayOf(0f) + outGain + floatArrayOf(0f),
+        )
+        renderer.setEnvelope(LoopMixRenderer.IN, LoopMixRenderer.KIND_GAIN, times, sampled(mix.volumeIn) { it })
+        renderer.setEnvelope(LoopMixRenderer.OUT, LoopMixRenderer.KIND_LOW_DB, times, sampled(mix.bassOut) { (1f - it) * cut })
+        renderer.setEnvelope(LoopMixRenderer.IN, LoopMixRenderer.KIND_LOW_DB, times, sampled(mix.bassIn) { (1f - it) * cut })
+        renderer.setEnvelope(LoopMixRenderer.OUT, LoopMixRenderer.KIND_HIGH_PASS_HZ, times, sampled(mix.hpOut) { highPass(it) }, exponential = true)
+        renderer.setEnvelope(LoopMixRenderer.IN, LoopMixRenderer.KIND_HIGH_PASS_HZ, times, sampled(mix.hpIn) { highPass(it) }, exponential = true)
+    }
+
+    private const val LOOP_TAIL_SECONDS = 3.0
 }

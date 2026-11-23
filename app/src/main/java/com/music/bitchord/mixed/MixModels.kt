@@ -214,27 +214,15 @@ object PresetCatalog {
         fx("echo_quarter", "Fast echo", c(0f to 0f, 0.5f to 0f, 0.7f to 0.8f, 1f to 0.5f), 0.5f),
     )
 
-    /** Looping preset ids encode the side and the length in bars, "end-1", "start-2", "both-4". */
+    /** The last beats of the outgoing song repeat through the whole blend: 1, 2, 4 or 8 of them. */
     val looping: List<ToolPreset> = buildList {
-        add(ToolPreset("none", "None") { it.copy(endingLoopBars = 0, startingLoopBars = 0) })
-        for (bars in intArrayOf(1, 2, 4, 8)) {
-            add(ToolPreset("end-$bars", "Ending loop · ${bars * 4} beats") { it.copy(endingLoopBars = bars, startingLoopBars = 0) })
-        }
-        for (bars in intArrayOf(1, 2, 4, 8)) {
-            add(ToolPreset("start-$bars", "Starting loop · ${bars * 4} beats") { it.copy(endingLoopBars = 0, startingLoopBars = bars) })
-        }
-        for (bars in intArrayOf(1, 2, 4)) {
-            add(ToolPreset("both-$bars", "Both loops · ${bars * 4} beats") { it.copy(endingLoopBars = bars, startingLoopBars = bars) })
+        add(ToolPreset("none", "None") { it.copy(loopBeats = 0) })
+        for (beats in intArrayOf(1, 2, 4, 8)) {
+            add(ToolPreset("beats-$beats", "$beats beat loop") { it.copy(loopBeats = beats) })
         }
     }
 
-    fun loopingIdOf(mix: ManualMix): String = when {
-        mix.endingLoopBars > 0 && mix.startingLoopBars > 0 ->
-            if (mix.endingLoopBars == mix.startingLoopBars) "both-${mix.endingLoopBars}" else CUSTOM
-        mix.endingLoopBars > 0 -> "end-${mix.endingLoopBars}"
-        mix.startingLoopBars > 0 -> "start-${mix.startingLoopBars}"
-        else -> "none"
-    }
+    fun loopingIdOf(mix: ManualMix): String = if (mix.loopBeats > 0) "beats-${mix.loopBeats}" else "none"
 
     fun list(tool: MixTool): List<ToolPreset> = when (tool) {
         MixTool.VOLUME -> volume
@@ -273,7 +261,7 @@ object PresetCatalog {
         Composite("cut", "Cut", "cut", "center", "none", "none"),
         Composite("echo", "Echo", "late_cut", "end", "none", "echo_34"),
         Composite("sweep", "Sweep", "blend", "center", "lp_in_hp_out", "none"),
-        Composite("loop", "Loop", "fade", "center", "none", "none", "both-1"),
+        Composite("loop", "Loop", "fade", "center", "none", "none", "beats-4"),
     )
 
     fun applyComposite(id: String, mix: ManualMix): ManualMix {
@@ -302,10 +290,9 @@ object PresetCatalog {
  * that filter is (1 = off, nothing filtered). The echo lane is how much of the
  * outgoing song is sent into the echo.
  *
- * [endingLoopBars] / [startingLoopBars] > 0 hand the transition to the loop
- * engine: the outgoing song's [endingLoopBars] bars from [outStartSec] repeat
- * and/or the incoming song's first [startingLoopBars] bars from [inCueSec]
- * repeat while the tempo is brought together.
+ * [loopBeats] > 0 hands the transition to the loop engine: the outgoing song's
+ * [loopBeats] beats from [outStartSec] repeat for the whole blend while the
+ * incoming song comes in on the same lanes.
  */
 data class ManualMix(
     val bars: Int = 4,
@@ -329,11 +316,11 @@ data class ManualMix(
     val eqId: String = "none",
     val filterId: String = "none",
     val effectId: String = "none",
-    val endingLoopBars: Int = 0,
-    val startingLoopBars: Int = 0,
+    /** 0 for none, else how many beats of the outgoing song, from [outStartSec], repeat through the blend. */
+    val loopBeats: Int = 0,
 ) {
     val lengthSec: Double get() = bars * 4 * beatSec
-    val usesLoops: Boolean get() = endingLoopBars > 0 || startingLoopBars > 0
+    val usesLoops: Boolean get() = loopBeats > 0
     val hasEcho: Boolean get() = echoOut.points.any { it.y > 0.05f }
 
     fun curve(lane: Lane): Curve = when (lane) {
@@ -386,8 +373,7 @@ data class ManualMix(
         put("eqId", eqId)
         put("filtId", filterId)
         put("fxId", effectId)
-        put("endLoop", endingLoopBars)
-        put("startLoop", startingLoopBars)
+        put("loopBeats", loopBeats)
     }
 
     companion object {
@@ -418,8 +404,7 @@ data class ManualMix(
                 eqId = obj.optString("eqId", PresetCatalog.CUSTOM),
                 filterId = obj.optString("filtId", PresetCatalog.CUSTOM),
                 effectId = obj.optString("fxId", PresetCatalog.CUSTOM),
-                endingLoopBars = obj.optInt("endLoop", 0).coerceIn(0, 16),
-                startingLoopBars = obj.optInt("startLoop", 0).coerceIn(0, 16),
+                loopBeats = obj.optInt("loopBeats", 0).takeIf { it in intArrayOf(1, 2, 4, 8) } ?: 0,
             )
         }
     }

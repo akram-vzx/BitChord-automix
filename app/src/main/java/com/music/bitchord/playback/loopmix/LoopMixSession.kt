@@ -122,6 +122,8 @@ class LoopMixSession private constructor(
             inId: String,
             sampleRate: Int,
             inLevel: Float,
+            /** When set, draws the gain, bass and filter envelopes in place of the engine's own. */
+            shape: ((LoopMixRenderer, LoopMix.Clock) -> Unit)? = null,
             decode: (side: LoopMix.Side, from: Double, to: Double) -> LoopRegion?,
         ): LoopMixSession? {
             if (!LoopMixRenderer.available || sampleRate <= 0) return null
@@ -190,36 +192,40 @@ class LoopMixSession private constructor(
 
             // Gains: the outgoing deck takes over from its song, the incoming loop
             // rises over the entry and the ramp, the outgoing one falls away.
-            val h = LoopMix.HANDOVER_SEC
-            renderer.setEnvelope(
-                LoopMixRenderer.OUT, LoopMixRenderer.KIND_GAIN,
-                doubleArrayOf(-h, 0.0, clock.enterEnd, clock.rampEnd, clock.releaseAt),
-                floatArrayOf(0f, 1f, 1f, 0.6f, 0f),
-            )
-            renderer.setEnvelope(
-                LoopMixRenderer.IN, LoopMixRenderer.KIND_GAIN,
-                doubleArrayOf(0.0, clock.enterEnd, clock.rampEnd),
-                floatArrayOf(0f, 0.55f, 1f),
-            )
-            // Bass: the incoming loop comes in without it; they swap over one bar mid-ramp.
-            val swapFrom = clock.handoffAt - clock.swapBar / 2
-            val swapTo = clock.handoffAt + clock.swapBar / 2
-            val cut = LoopMix.BASS_CUT_DB.toFloat()
-            renderer.setEnvelope(
-                LoopMixRenderer.OUT, LoopMixRenderer.KIND_LOW_DB,
-                doubleArrayOf(swapFrom, swapTo), floatArrayOf(0f, cut),
-            )
-            renderer.setEnvelope(
-                LoopMixRenderer.IN, LoopMixRenderer.KIND_LOW_DB,
-                doubleArrayOf(swapFrom, swapTo), floatArrayOf(cut, 0f),
-            )
-            // The outgoing loop drains away through a rising high-pass once the tempo has arrived.
-            renderer.setEnvelope(
-                LoopMixRenderer.OUT, LoopMixRenderer.KIND_HIGH_PASS_HZ,
-                doubleArrayOf(clock.rampEnd, clock.releaseAt),
-                floatArrayOf(LoopMix.HIGH_PASS_FROM_HZ.toFloat(), LoopMix.HIGH_PASS_TO_HZ.toFloat()),
-                exponential = true,
-            )
+            if (shape != null) {
+                shape(renderer, clock)
+            } else {
+                val h = LoopMix.HANDOVER_SEC
+                renderer.setEnvelope(
+                    LoopMixRenderer.OUT, LoopMixRenderer.KIND_GAIN,
+                    doubleArrayOf(-h, 0.0, clock.enterEnd, clock.rampEnd, clock.releaseAt),
+                    floatArrayOf(0f, 1f, 1f, 0.6f, 0f),
+                )
+                renderer.setEnvelope(
+                    LoopMixRenderer.IN, LoopMixRenderer.KIND_GAIN,
+                    doubleArrayOf(0.0, clock.enterEnd, clock.rampEnd),
+                    floatArrayOf(0f, 0.55f, 1f),
+                )
+                // Bass: the incoming loop comes in without it; they swap over one bar mid-ramp.
+                val swapFrom = clock.handoffAt - clock.swapBar / 2
+                val swapTo = clock.handoffAt + clock.swapBar / 2
+                val cut = LoopMix.BASS_CUT_DB.toFloat()
+                renderer.setEnvelope(
+                    LoopMixRenderer.OUT, LoopMixRenderer.KIND_LOW_DB,
+                    doubleArrayOf(swapFrom, swapTo), floatArrayOf(0f, cut),
+                )
+                renderer.setEnvelope(
+                    LoopMixRenderer.IN, LoopMixRenderer.KIND_LOW_DB,
+                    doubleArrayOf(swapFrom, swapTo), floatArrayOf(cut, 0f),
+                )
+                // The outgoing loop drains away through a rising high-pass once the tempo has arrived.
+                renderer.setEnvelope(
+                    LoopMixRenderer.OUT, LoopMixRenderer.KIND_HIGH_PASS_HZ,
+                    doubleArrayOf(clock.rampEnd, clock.releaseAt),
+                    floatArrayOf(LoopMix.HIGH_PASS_FROM_HZ.toFloat(), LoopMix.HIGH_PASS_TO_HZ.toFloat()),
+                    exponential = true,
+                )
+            }
             renderer.prepare()
             // The incoming deck hands over to its own player at the same track position.
             renderer.setFadeOut(LoopMixRenderer.IN, clock.elementTrackTime)

@@ -128,8 +128,10 @@ object LoopMix {
         /** Share of the loop that is sung (0..1); 0 when the lyrics vouch for it. */
         val vocal: Double,
         val checkedBy: Check,
+        /** How many beats the loop repeats: a whole number of bars unless a mixed playlist asks for fewer. */
+        val loopBeats: Int = bars * 4,
     ) {
-        val beats: Int get() = bars * 4
+        val beats: Int get() = loopBeats
     }
 
     data class Plan(

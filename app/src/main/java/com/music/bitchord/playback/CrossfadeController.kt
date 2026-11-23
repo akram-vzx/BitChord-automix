@@ -1250,7 +1250,7 @@ class CrossfadeController(
             plannedTransition = currentItem.mediaId to loopStartMs
             holdAhead(player, duration)
             if (loopStartMs - player.currentPosition > LOOP_ARM_LEAD_MS) return
-            beginLoop(player, loop, currentItem, nextItem, duration, nextDuration)
+            beginLoop(player, loop, currentItem, nextItem, duration, nextDuration, manualMix?.let(MixedPlayback::shapeFor))
             return
         }
 
@@ -2689,6 +2689,7 @@ class CrossfadeController(
         inItem: MediaItem,
         durationMs: Long,
         nextDurationMs: Long,
+        shape: ((com.music.bitchord.playback.loopmix.LoopMixRenderer, LoopMix.Clock) -> Unit)? = null,
     ) {
         val into = standby()
         if (out === into) return
@@ -2718,7 +2719,7 @@ class CrossfadeController(
             val began = SystemClock.elapsedRealtime()
             val session = withContext(Dispatchers.Default) {
                 runCatching {
-                    LoopMixSession.build(plan, outItem.mediaId, inItem.mediaId, sampleRate, inLevel) { side, from, to ->
+                    LoopMixSession.build(plan, outItem.mediaId, inItem.mediaId, sampleRate, inLevel, shape) { side, from, to ->
                         if (side == LoopMix.Side.OUT) {
                             loopRegion(outItem, durationMs, from, to, sampleRate)
                         } else {

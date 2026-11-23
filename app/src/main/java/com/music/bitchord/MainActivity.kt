@@ -3482,6 +3482,9 @@ private fun BitChordApp(
                                         }
                                     },
                                     onStopPreview = { controller?.pause() },
+                                    playhead = {
+                                        Triple(controller?.currentMediaItem?.mediaId, controller?.currentPosition ?: 0L, controller?.isPlaying ?: false)
+                                    },
                                 )
                             } else DetailScreen(
                                 page = page,
@@ -4029,353 +4032,355 @@ private fun BitChordApp(
                     )
                 }
 
-                FrostedTopBar(
-                    title = when (route) {
-                        AppRoute.Spotify -> stringResource(R.string.spotify)
-                        AppRoute.Downloads -> stringResource(R.string.downloads)
-                        AppRoute.Discord -> "Discord"
-                        AppRoute.History -> stringResource(R.string.history)
-                        is AppRoute.LibraryShowAll -> route.shelf.title
-                        is AppRoute.ArtistShelf -> route.shelf.title
-                        AppRoute.Moods -> stringResource(R.string.find_your_mood)
-                        AppRoute.AccountScrobbling -> stringResource(R.string.account_scrobbling)
-                        AppRoute.Sources -> stringResource(R.string.sources)
-                        AppRoute.ListenTogether -> stringResource(R.string.listen_together)
-                        AppRoute.WearOs -> stringResource(R.string.wear_os_page_title)
-                        AppRoute.DriveBackup -> stringResource(R.string.drive_backup_title)
-                        AppRoute.DriveDevices -> stringResource(R.string.drive_devices_title)
-                        AppRoute.Equalizer -> stringResource(R.string.equalizer)
-                        AppRoute.Settings -> stringResource(R.string.settings)
-                        is AppRoute.SettingsSection -> stringResource(route.category.title)
-                        is AppRoute.SettingsChoice -> stringResource(route.choice.title)
-                        AppRoute.EqualizerPresets -> stringResource(R.string.equalizer_preset)
-                        AppRoute.Replay -> stringResource(R.string.replay)
-                        null -> when {
-                            detail != null && detailActiveShelf != null -> detailActiveShelf?.title.orEmpty()
-                            detail != null -> detail.title
-                            selectedMoodGenre != null -> selectedMoodGenre?.title.orEmpty()
-                            else -> tabs[selectedTab].let {
-                                if (it.label == "Play") stringResource(R.string.listen_now) else it.label
-                            }
-                        }
-                    },
-                    // Every page, in either material, uses separated floating
-                    // circles over the shared gradient — no full-width pane.
-                    transparentBackdrop = true,
-                    artworkPageChrome = true,
-                    backButtonHazeState = hazeState,
-                    trailingTitle = if (detail != null && detailActiveShelf != null) detail.title else null,
-                    // Search has no large in-list header to hand the title back to —
-                    // the field takes that space — so its bar title is always up.
-                    scrolled = {
-                        when {
-                            // The page leads with its own large "Replay", so the bar
-                            // stays out of the way until that has been scrolled off.
-                            route == AppRoute.Replay -> replayScrolled
-                            route != null -> true
-                            detail != null && detailActiveShelf != null -> true
-                            detail != null -> detailScrolled
-                            selectedMoodGenre != null -> true
-                            else -> scrolled || selectedTab == TAB_SEARCH
-                        }
-                    },
-                    refreshing = currentFeed != null && currentFeed in refreshing,
-                    pullFraction = { currentPull?.distanceFraction ?: 0f },
-                    // The same step the back gesture takes — see [goBack] —
-                    // offered on anything pushed over a tab.
-                    onBack = when {
-                        route != null || detail != null || selectedMoodGenre != null -> goBack
-                        else -> null
-                    },
-                    modifier = Modifier.align(Alignment.TopCenter),
-                    // Only on the Search tab itself, not on anything pushed over it.
-                    accessory = if (
-                        selectedTab == TAB_SEARCH && route == null && detail == null && selectedMoodGenre == null
-                    ) {
-                        {
-                            // The search field lives up here in the bar, beside the
-                            // account photo, so it answers the nav bar's Search tap
-                            // itself: focus and keyboard, the way the page used to.
-                            val keyboard = LocalSoftwareKeyboardController.current
-                            LaunchedEffect(searchFocusRequested) {
-                                if (searchFocusRequested) {
-                                    searchFieldFocus.requestFocus()
-                                    keyboard?.show()
-                                    searchFocusRequested = false
+                if (!com.music.bitchord.mixed.MixedUiState.editorOpen.collectAsStateWithLifecycle().value) {
+                    FrostedTopBar(
+                        title = when (route) {
+                            AppRoute.Spotify -> stringResource(R.string.spotify)
+                            AppRoute.Downloads -> stringResource(R.string.downloads)
+                            AppRoute.Discord -> "Discord"
+                            AppRoute.History -> stringResource(R.string.history)
+                            is AppRoute.LibraryShowAll -> route.shelf.title
+                            is AppRoute.ArtistShelf -> route.shelf.title
+                            AppRoute.Moods -> stringResource(R.string.find_your_mood)
+                            AppRoute.AccountScrobbling -> stringResource(R.string.account_scrobbling)
+                            AppRoute.Sources -> stringResource(R.string.sources)
+                            AppRoute.ListenTogether -> stringResource(R.string.listen_together)
+                            AppRoute.WearOs -> stringResource(R.string.wear_os_page_title)
+                            AppRoute.DriveBackup -> stringResource(R.string.drive_backup_title)
+                            AppRoute.DriveDevices -> stringResource(R.string.drive_devices_title)
+                            AppRoute.Equalizer -> stringResource(R.string.equalizer)
+                            AppRoute.Settings -> stringResource(R.string.settings)
+                            is AppRoute.SettingsSection -> stringResource(route.category.title)
+                            is AppRoute.SettingsChoice -> stringResource(route.choice.title)
+                            AppRoute.EqualizerPresets -> stringResource(R.string.equalizer_preset)
+                            AppRoute.Replay -> stringResource(R.string.replay)
+                            null -> when {
+                                detail != null && detailActiveShelf != null -> detailActiveShelf?.title.orEmpty()
+                                detail != null -> detail.title
+                                selectedMoodGenre != null -> selectedMoodGenre?.title.orEmpty()
+                                else -> tabs[selectedTab].let {
+                                    if (it.label == "Play") stringResource(R.string.listen_now) else it.label
                                 }
                             }
-                            SearchField(
-                                query = query,
-                                onQueryChange = viewModel::onQueryChange,
-                                onSubmit = viewModel::submitSearch,
-                                focusRequester = searchFieldFocus,
-                                placeholder = org.jetbrains.compose.resources.stringResource(
-                                    if (searchSource == SearchSource.LIBRARY) {
-                                        SharedRes.string.search_library_hint
-                                    } else if (searchSource == SearchSource.ADDONS) {
-                                        SharedRes.string.search_addons_hint
-                                    } else {
-                                        SharedRes.string.search_hint
-                                    },
-                                ),
-                            )
-                        }
-                    } else null,
-                    actions = {
-                        // This is intentionally scoped to Listen together: the
-                        // round-trip time is meaningful while coordinating a
-                        // party, but would be noise in the rest of the app.
-                        if (route == AppRoute.ListenTogether) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 8.dp),
-                            ) {
-                                when (val state = partyServerStatus) {
-                                    is ServerConnectionState.CustomFallback -> {
-                                        Icon(
-                                            Icons.Rounded.CloudOff,
-                                            contentDescription = stringResource(R.string.listen_together_top_bar_fallback, stringResource(R.string.listen_together_ping, state.latencyMs)),
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(14.dp),
-                                        )
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(
-                                            text = stringResource(R.string.listen_together_ping, state.latencyMs),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.error,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    is ServerConnectionState.CustomOnline -> {
-                                        Text(
-                                            text = stringResource(R.string.listen_together_ping, state.latencyMs),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    is ServerConnectionState.DefaultOnline -> {
-                                        Text(
-                                            text = stringResource(R.string.listen_together_ping, state.latencyMs),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    ServerConnectionState.Checking -> {
-                                        Text(
-                                            text = stringResource(R.string.listen_together_server_checking),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    ServerConnectionState.Offline -> {
-                                        Text(
-                                            text = stringResource(R.string.listen_together_server_offline_dash),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.error,
-                                            maxLines = 1,
-                                        )
+                        },
+                        // Every page, in either material, uses separated floating
+                        // circles over the shared gradient — no full-width pane.
+                        transparentBackdrop = true,
+                        artworkPageChrome = true,
+                        backButtonHazeState = hazeState,
+                        trailingTitle = if (detail != null && detailActiveShelf != null) detail.title else null,
+                        // Search has no large in-list header to hand the title back to —
+                        // the field takes that space — so its bar title is always up.
+                        scrolled = {
+                            when {
+                                // The page leads with its own large "Replay", so the bar
+                                // stays out of the way until that has been scrolled off.
+                                route == AppRoute.Replay -> replayScrolled
+                                route != null -> true
+                                detail != null && detailActiveShelf != null -> true
+                                detail != null -> detailScrolled
+                                selectedMoodGenre != null -> true
+                                else -> scrolled || selectedTab == TAB_SEARCH
+                            }
+                        },
+                        refreshing = currentFeed != null && currentFeed in refreshing,
+                        pullFraction = { currentPull?.distanceFraction ?: 0f },
+                        // The same step the back gesture takes — see [goBack] —
+                        // offered on anything pushed over a tab.
+                        onBack = when {
+                            route != null || detail != null || selectedMoodGenre != null -> goBack
+                            else -> null
+                        },
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        // Only on the Search tab itself, not on anything pushed over it.
+                        accessory = if (
+                            selectedTab == TAB_SEARCH && route == null && detail == null && selectedMoodGenre == null
+                        ) {
+                            {
+                                // The search field lives up here in the bar, beside the
+                                // account photo, so it answers the nav bar's Search tap
+                                // itself: focus and keyboard, the way the page used to.
+                                val keyboard = LocalSoftwareKeyboardController.current
+                                LaunchedEffect(searchFocusRequested) {
+                                    if (searchFocusRequested) {
+                                        searchFieldFocus.requestFocus()
+                                        keyboard?.show()
+                                        searchFocusRequested = false
                                     }
                                 }
+                                SearchField(
+                                    query = query,
+                                    onQueryChange = viewModel::onQueryChange,
+                                    onSubmit = viewModel::submitSearch,
+                                    focusRequester = searchFieldFocus,
+                                    placeholder = org.jetbrains.compose.resources.stringResource(
+                                        if (searchSource == SearchSource.LIBRARY) {
+                                            SharedRes.string.search_library_hint
+                                        } else if (searchSource == SearchSource.ADDONS) {
+                                            SharedRes.string.search_addons_hint
+                                        } else {
+                                            SharedRes.string.search_hint
+                                        },
+                                    ),
+                                )
                             }
-                        }
-                        // Only worth surfacing where there's room for it and it won't
-                        // be mistaken for a per-page action — Home, at rest.
-                        if (route == null && detail == null && selectedTab == TAB_HOME) {
-                            updateNotice?.let { update ->
-                                IconButton(onClick = { showUpdateDialog = true }) {
-                                    Icon(
-                                        // An arrow rising out of a bar, not the
-                                        // little phone-with-an-arrow: at 24dp the
-                                        // handset outline is mush, and the glyph
-                                        // has to read as "newer version" rather
-                                        // than as "something about your device".
-                                        Icons.Rounded.Upgrade,
-                                        contentDescription = stringResource(R.string.update_available, update.version),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                        }
-                        // None on Settings or the pages opened from it: those are
-                        // about the account, and the photo would only reopen them.
-                        if (!(route != null && AppRoute.Settings in navigator)) {
-                            // Left of the account photo, and only on Library itself:
-                            // a history is a record of what was played, which reads
-                            // as that tab's business rather than every tab's.
-                            if (route == null && detail == null && selectedTab == TAB_LIBRARY) {
-                                IconButton(
-                                    onClick = {
-                                        navigator.push(AppRoute.History)
-                                        viewModel.loadHistory()
-                                    },
+                        } else null,
+                        actions = {
+                            // This is intentionally scoped to Listen together: the
+                            // round-trip time is meaningful while coordinating a
+                            // party, but would be noise in the rest of the app.
+                            if (route == AppRoute.ListenTogether) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp),
                                 ) {
-                                    Icon(
-                                        Icons.Rounded.History,
-                                        contentDescription = stringResource(R.string.listening_history),
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                }
-                            }
-                            // Left of the account photo, and only on a Library
-                            // "Show all" grid — the same control the Downloads
-                            // folder offers (see `LocalSearchField`), adapted to
-                            // the one thing a playlist or album card carries: a
-                            // title.
-                            if (route is AppRoute.LibraryShowAll) {
-                                Box {
-                                    IconButton(onClick = { librarySortMenuOpen = true }) {
-                                        Icon(
-                                            Icons.Rounded.Sort,
-                                            contentDescription = stringResource(R.string.sort_library),
-                                            tint = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = librarySortMenuOpen,
-                                        onDismissRequest = { librarySortMenuOpen = false },
-                                    ) {
-                                        LibrarySort.entries.forEach { option ->
-                                            DropdownMenuItem(
-                                                text = { Text(option.localizedLabel()) },
-                                                trailingIcon = if (option == librarySort) {
-                                                    { Icon(Icons.Rounded.Check, contentDescription = null) }
-                                                } else null,
-                                                onClick = {
-                                                    AppSettings.setLibrarySort(option)
-                                                    librarySortMenuOpen = false
-                                                },
+                                    when (val state = partyServerStatus) {
+                                        is ServerConnectionState.CustomFallback -> {
+                                            Icon(
+                                                Icons.Rounded.CloudOff,
+                                                contentDescription = stringResource(R.string.listen_together_top_bar_fallback, stringResource(R.string.listen_together_ping, state.latencyMs)),
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.listen_together_ping, state.latencyMs),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.error,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        is ServerConnectionState.CustomOnline -> {
+                                            Text(
+                                                text = stringResource(R.string.listen_together_ping, state.latencyMs),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        is ServerConnectionState.DefaultOnline -> {
+                                            Text(
+                                                text = stringResource(R.string.listen_together_ping, state.latencyMs),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        ServerConnectionState.Checking -> {
+                                            Text(
+                                                text = stringResource(R.string.listen_together_server_checking),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        ServerConnectionState.Offline -> {
+                                            Text(
+                                                text = stringResource(R.string.listen_together_server_offline_dash),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.error,
+                                                maxLines = 1,
                                             )
                                         }
                                     }
                                 }
                             }
-                            // Sort, only on an album or playlist page or a device
-                            // folder — an artist page has no single track list to
-                            // reorder. A folder's opens its own menu: its sort
-                            // orders, and list or grid for its tabs.
-                            //
-                            // Search and the overflow flank it, as the share and
-                            // "…" pair do on Apple Music's album page: the header
-                            // below is left with just the sleeve, the title and
-                            // Shuffle / Play / Add.
-                            if ((isReleaseDetail || isLocalDetail) && detail != null) {
-                                val releaseSongs = (detail.songs as? UiState.Success)?.data.orEmpty()
-                                if (releaseSongs.isNotEmpty()) {
-                                    IconButton(onClick = { detailSearching = !detailSearching }) {
+                            // Only worth surfacing where there's room for it and it won't
+                            // be mistaken for a per-page action — Home, at rest.
+                            if (route == null && detail == null && selectedTab == TAB_HOME) {
+                                updateNotice?.let { update ->
+                                    IconButton(onClick = { showUpdateDialog = true }) {
                                         Icon(
-                                            if (detailSearching) Icons.Rounded.Close else BitChordIcons.Search,
+                                            // An arrow rising out of a bar, not the
+                                            // little phone-with-an-arrow: at 24dp the
+                                            // handset outline is mush, and the glyph
+                                            // has to read as "newer version" rather
+                                            // than as "something about your device".
+                                            Icons.Rounded.Upgrade,
+                                            contentDescription = stringResource(R.string.update_available, update.version),
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                            // None on Settings or the pages opened from it: those are
+                            // about the account, and the photo would only reopen them.
+                            if (!(route != null && AppRoute.Settings in navigator)) {
+                                // Left of the account photo, and only on Library itself:
+                                // a history is a record of what was played, which reads
+                                // as that tab's business rather than every tab's.
+                                if (route == null && detail == null && selectedTab == TAB_LIBRARY) {
+                                    IconButton(
+                                        onClick = {
+                                            navigator.push(AppRoute.History)
+                                            viewModel.loadHistory()
+                                        },
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.History,
+                                            contentDescription = stringResource(R.string.listening_history),
+                                            tint = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    }
+                                }
+                                // Left of the account photo, and only on a Library
+                                // "Show all" grid — the same control the Downloads
+                                // folder offers (see `LocalSearchField`), adapted to
+                                // the one thing a playlist or album card carries: a
+                                // title.
+                                if (route is AppRoute.LibraryShowAll) {
+                                    Box {
+                                        IconButton(onClick = { librarySortMenuOpen = true }) {
+                                            Icon(
+                                                Icons.Rounded.Sort,
+                                                contentDescription = stringResource(R.string.sort_library),
+                                                tint = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = librarySortMenuOpen,
+                                            onDismissRequest = { librarySortMenuOpen = false },
+                                        ) {
+                                            LibrarySort.entries.forEach { option ->
+                                                DropdownMenuItem(
+                                                    text = { Text(option.localizedLabel()) },
+                                                    trailingIcon = if (option == librarySort) {
+                                                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                                                    } else null,
+                                                    onClick = {
+                                                        AppSettings.setLibrarySort(option)
+                                                        librarySortMenuOpen = false
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                // Sort, only on an album or playlist page or a device
+                                // folder — an artist page has no single track list to
+                                // reorder. A folder's opens its own menu: its sort
+                                // orders, and list or grid for its tabs.
+                                //
+                                // Search and the overflow flank it, as the share and
+                                // "…" pair do on Apple Music's album page: the header
+                                // below is left with just the sleeve, the title and
+                                // Shuffle / Play / Add.
+                                if ((isReleaseDetail || isLocalDetail) && detail != null) {
+                                    val releaseSongs = (detail.songs as? UiState.Success)?.data.orEmpty()
+                                    if (releaseSongs.isNotEmpty()) {
+                                        IconButton(onClick = { detailSearching = !detailSearching }) {
+                                            Icon(
+                                                if (detailSearching) Icons.Rounded.Close else BitChordIcons.Search,
+                                                contentDescription = stringResource(
+                                                    if (detailSearching) R.string.close_search else R.string.search_this_list,
+                                                ),
+                                                tint = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                    }
+                                    // The menu itself is [FrostedSortMenu], composed
+                                    // with the app's other frosted overlays further
+                                    // down — in the main hierarchy, where the haze
+                                    // can see the content it blurs.
+                                    IconButton(
+                                        onClick = { if (isLocalDetail) folderMenuOpen = true else songSortMenuOpen = true },
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Sort,
                                             contentDescription = stringResource(
-                                                if (detailSearching) R.string.close_search else R.string.search_this_list,
+                                                if (isLocalDetail) R.string.sort_music else R.string.sort_songs,
                                             ),
                                             tint = MaterialTheme.colorScheme.onSurface,
                                         )
                                     }
+                                    if (isReleaseDetail && releaseSongs.isNotEmpty()) {
+                                        // The page's own tracks, in the order the page
+                                        // shows them, so the sheet has them already and
+                                        // Play, Shuffle and Open are the buttons beside
+                                        // the one that opened it rather than rows on it.
+                                        // Download lives in the sheet too — and the
+                                        // tracks arrive stamped with the album they came
+                                        // off, which is what the download record groups
+                                        // them under.
+                                        IconButton(
+                                            modifier = Modifier.menuAnchor(),
+                                            onClick = {
+                                                openBrowseMenu(BrowseTarget(
+                                                    browseId = detail.browseId,
+                                                    title = detail.title,
+                                                    subtitle = detail.subtitle,
+                                                    thumbnailUrl = detail.thumbnailUrl,
+                                                    type = detail.type,
+                                                    songs = releaseSongs.sortedForDetail(songSort).map { song ->
+                                                        if (detail.type == BrowseType.ALBUM) {
+                                                            song.copy(albumName = song.albumName ?: detail.title)
+                                                        } else {
+                                                            song
+                                                        }
+                                                    },
+                                                    fromCard = false,
+                                                    downloadId = downloadIdFor(detail.browseId),
+                                                ))
+                                            },
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.MoreHoriz,
+                                                contentDescription = stringResource(R.string.more),
+                                                tint = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                    }
                                 }
-                                // The menu itself is [FrostedSortMenu], composed
-                                // with the app's other frosted overlays further
-                                // down — in the main hierarchy, where the haze
-                                // can see the content it blurs.
-                                IconButton(
-                                    onClick = { if (isLocalDetail) folderMenuOpen = true else songSortMenuOpen = true },
+                                // Left of the account photo, on an artist page: iOS's
+                                // share glyph, sending the artist's channel link — the
+                                // one YouTube Music itself shares for an artist.
+                                if (detail != null && !isLocalDetail && detail.type == BrowseType.ARTIST &&
+                                    detailActiveShelf == null && detail.browseId.startsWith("UC")
                                 ) {
-                                    Icon(
-                                        Icons.Rounded.Sort,
-                                        contentDescription = stringResource(
-                                            if (isLocalDetail) R.string.sort_music else R.string.sort_songs,
-                                        ),
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                }
-                                if (isReleaseDetail && releaseSongs.isNotEmpty()) {
-                                    // The page's own tracks, in the order the page
-                                    // shows them, so the sheet has them already and
-                                    // Play, Shuffle and Open are the buttons beside
-                                    // the one that opened it rather than rows on it.
-                                    // Download lives in the sheet too — and the
-                                    // tracks arrive stamped with the album they came
-                                    // off, which is what the download record groups
-                                    // them under.
                                     IconButton(
-                                        modifier = Modifier.menuAnchor(),
                                         onClick = {
-                                            openBrowseMenu(BrowseTarget(
-                                                browseId = detail.browseId,
-                                                title = detail.title,
-                                                subtitle = detail.subtitle,
-                                                thumbnailUrl = detail.thumbnailUrl,
-                                                type = detail.type,
-                                                songs = releaseSongs.sortedForDetail(songSort).map { song ->
-                                                    if (detail.type == BrowseType.ALBUM) {
-                                                        song.copy(albumName = song.albumName ?: detail.title)
-                                                    } else {
-                                                        song
-                                                    }
-                                                },
-                                                fromCard = false,
-                                                downloadId = downloadIdFor(detail.browseId),
-                                            ))
+                                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(
+                                                    Intent.EXTRA_TEXT,
+                                                    "https://music.youtube.com/channel/${detail.browseId}",
+                                                )
+                                            }
+                                            context.startActivity(Intent.createChooser(sendIntent, detail.title))
                                         },
                                     ) {
                                         Icon(
-                                            Icons.Rounded.MoreHoriz,
-                                            contentDescription = stringResource(R.string.more),
+                                            Icons.Rounded.IosShare,
+                                            contentDescription = stringResource(R.string.share),
                                             tint = MaterialTheme.colorScheme.onSurface,
                                         )
                                     }
                                 }
-                            }
-                            // Left of the account photo, on an artist page: iOS's
-                            // share glyph, sending the artist's channel link — the
-                            // one YouTube Music itself shares for an artist.
-                            if (detail != null && !isLocalDetail && detail.type == BrowseType.ARTIST &&
-                                detailActiveShelf == null && detail.browseId.startsWith("UC")
-                            ) {
-                                IconButton(
-                                    onClick = {
-                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(
-                                                Intent.EXTRA_TEXT,
-                                                "https://music.youtube.com/channel/${detail.browseId}",
-                                            )
-                                        }
-                                        context.startActivity(Intent.createChooser(sendIntent, detail.title))
-                                    },
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.IosShare,
-                                        contentDescription = stringResource(R.string.share),
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                    )
+                                // Left of the account photo, and only there while
+                                // there is a batch to report on — see
+                                // [TopBarDownloadButton], which decides that for
+                                // itself rather than being told. Not on the page it
+                                // opens, where it would only lead back to itself.
+                                if (route != AppRoute.Downloads) {
+                                    TopBarDownloadButton(onClick = { navigator.push(AppRoute.Downloads) })
                                 }
+                                // Not on a release page, whose pill already carries
+                                // three of its own controls — Apple Music leaves the
+                                // profile off its album pages too.
+                                if (!isReleaseDetail) TopBarAccountButton(
+                                    account = account,
+                                    onClick = {
+                                        if (signedIn) {
+                                            viewModel.loadChannels()
+                                            showAccountSelector = true
+                                        } else navigator.push(AppRoute.Settings)
+                                    },
+                                    onSwipeProfile = { forward -> viewModel.stepProfile(forward) },
+                                )
                             }
-                            // Left of the account photo, and only there while
-                            // there is a batch to report on — see
-                            // [TopBarDownloadButton], which decides that for
-                            // itself rather than being told. Not on the page it
-                            // opens, where it would only lead back to itself.
-                            if (route != AppRoute.Downloads) {
-                                TopBarDownloadButton(onClick = { navigator.push(AppRoute.Downloads) })
-                            }
-                            // Not on a release page, whose pill already carries
-                            // three of its own controls — Apple Music leaves the
-                            // profile off its album pages too.
-                            if (!isReleaseDetail) TopBarAccountButton(
-                                account = account,
-                                onClick = {
-                                    if (signedIn) {
-                                        viewModel.loadChannels()
-                                        showAccountSelector = true
-                                    } else navigator.push(AppRoute.Settings)
-                                },
-                                onSwipeProfile = { forward -> viewModel.stepProfile(forward) },
-                            )
-                        }
-                    },
-                )
+                        },
+                    )
+                }
 
                 // Drawn before the bars so their own glass reads on top of it.
                 BottomFadeScrim(
