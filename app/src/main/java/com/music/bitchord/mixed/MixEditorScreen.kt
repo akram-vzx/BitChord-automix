@@ -288,6 +288,12 @@ fun MixEditorScreen(
             previewing = previewing,
             onChange = { change(it) },
             onSnap = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
+            onPickLane = { lane, x ->
+                customTool = lane.tool
+                editingLane = lane
+                // The point lands on the line where it was tapped; the line itself does not change shape.
+                change(current.withCurve(lane, current.curve(lane).inserted(x).first))
+            },
             onTogglePreview = {
                 if (previewing) {
                     previewing = false
@@ -435,6 +441,7 @@ private fun MixGraph(
     previewing: Boolean,
     onChange: (ManualMix) -> Unit,
     onSnap: () -> Unit,
+    onPickLane: (Lane, Float) -> Unit,
     onTogglePreview: () -> Unit,
     barsMenu: Boolean,
     onBarsMenu: (Boolean) -> Unit,
@@ -444,6 +451,7 @@ private fun MixGraph(
     val currentLane by rememberUpdatedState(editingLane)
     val onChangeNow by rememberUpdatedState(onChange)
     val onSnapNow by rememberUpdatedState(onSnap)
+    val onPickLaneNow by rememberUpdatedState(onPickLane)
     var dragNode by remember { mutableIntStateOf(-1) }
 
     // Raw positions while a deck is being dragged; the snapped value is what the mix gets.
@@ -464,12 +472,18 @@ private fun MixGraph(
                     detectTapGestures(
                         onTap = { pos ->
                             val lane = currentLane ?: return@detectTapGestures
-                            val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), currentMix)
-                            val curve = currentMix.curve(lane)
-                            val hit = g.hitNode(lane, curve, pos, 26.dp.toPx())
-                            if (hit < 0 && g.inLaneBand(lane, pos)) {
-                                val (next, _) = curve.inserted(g.xToCurve(pos.x), g.yToValue(lane, pos.y))
-                                onChangeNow(currentMix.withCurve(lane, next))
+                            val m = currentMix
+                            val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), m)
+                            val curve = m.curve(lane)
+                            if (g.hitNode(lane, curve, pos, 26.dp.toPx()) >= 0) return@detectTapGestures
+                            // A tap near another line moves the editing to that line; near this one, or
+                            // anywhere in its half of the graph, puts a new point where it was tapped.
+                            val near = nearestLane(g, m, pos, 32.dp.toPx())
+                            if (near != null && near != lane) {
+                                onPickLaneNow(near, g.xToCurve(pos.x))
+                            } else if (near == lane || g.inLaneBand(lane, pos)) {
+                                val (next, _) = curve.inserted(g.xToCurve(pos.x), if (near == lane) null else g.yToValue(lane, pos.y))
+                                onChangeNow(m.withCurve(lane, next))
                             }
                         },
                         onLongPress = { pos ->
@@ -501,7 +515,16 @@ private fun MixGraph(
                     )
                 }
         } else {
-            Modifier.pointerInput(durationA, durationB) {
+            Modifier.pointerInput(Unit) {
+                // Tap a line to edit it: a point appears on it where it was tapped, ready to be moved.
+                detectTapGestures(
+                    onTap = { pos ->
+                        val m = currentMix
+                        val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), m)
+                        nearestLane(g, m, pos, 32.dp.toPx())?.let { onPickLaneNow(it, g.xToCurve(pos.x)) }
+                    },
+                )
+            }.pointerInput(durationA, durationB) {
                 var deck = 0
                 detectDragGestures(
                     onDragStart = { pos ->
@@ -517,7 +540,7 @@ private fun MixGraph(
                         if (g.pxPerSec <= 0f) return@detectDragGestures
                         if (deck == 0) {
                             rawOut -= amount.x / g.pxPerSec
-                            val snapped = gridA?.let { magnetBar(it, rawOut) } ?: rawOut
+                            val snapped = if (m.tempoMatch) gridA?.let { magnetBar(it, rawOut) } ?: rawOut else rawOut
                             val clamped = snapped.coerceIn(0.0, max(0.0, durationA - m.lengthSec))
                             if (clamped != m.outStartSec) {
                                 if (clamped != lastSnapped && snapped != rawOut) onSnapNow()
@@ -526,7 +549,7 @@ private fun MixGraph(
                             }
                         } else {
                             rawIn -= amount.x / g.pxPerSec * m.incomingRate
-                            val snapped = gridB?.let { magnetBar(it, rawIn) } ?: rawIn
+                            val snapped = if (m.tempoMatch) gridB?.let { magnetBar(it, rawIn) } ?: rawIn else rawIn
                             val clamped = snapped.coerceIn(0.0, max(0.0, durationB - m.lengthSec * m.incomingRate - 1.0))
                             if (clamped != m.inCueSec) {
                                 if (clamped != lastSnapped && snapped != rawIn) onSnapNow()
@@ -562,7 +585,7 @@ private fun MixGraph(
 
         // "8 bars", attached to the bottom of the window.
         val barsLabelX = with(androidx.compose.ui.platform.LocalDensity.current) { ((geometry.left + geometry.right) / 2f).toDp() }
-        Box(Modifier.align(Alignment.BottomStart).padding(start = barsLabelX - 44.dp)) {
+        Box(Modifier.align(Alignment.BottomStart).padding(start = (barsLabelX - 44.dp).coerceAtLeast(0.dp))) {
             Row(
                 Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0xFF2E2E33)).clickable { onBarsMenu(true) }
                     .padding(horizontal = 14.dp, vertical = 7.dp),
@@ -613,6 +636,31 @@ private class GraphGeometry(val width: Float, val height: Float, val mix: Manual
         }
         return best
     }
+}
+
+/** Whether a lane is at rest, and so not drawn: bass and filters fully open, the echo send at nothing. */
+private fun isAtRest(lane: Lane, curve: Curve): Boolean = when (lane) {
+    Lane.ECHO_OUT -> curve.points.all { it.y <= 0.05f }
+    Lane.VOLUME_OUT, Lane.VOLUME_IN -> false
+    else -> curve.points.all { it.y >= 0.95f }
+}
+
+/** The drawn lane whose line passes closest to [pos], when one passes within [radius]. */
+private fun nearestLane(g: GraphGeometry, mix: ManualMix, pos: Offset, radius: Float): Lane? {
+    if (pos.x < g.left - radius || pos.x > g.right + radius) return null
+    val fraction = g.xToCurve(pos.x)
+    var best: Lane? = null
+    var bestDistance = radius
+    for (lane in Lane.values()) {
+        val curve = mix.curve(lane)
+        if (isAtRest(lane, curve)) continue
+        val distance = abs(g.laneY(lane, curve.at(fraction)) - pos.y)
+        if (distance < bestDistance) {
+            bestDistance = distance
+            best = lane
+        }
+    }
+    return best
 }
 
 /** Pulls [seconds] onto a bar line when it is within half a beat of one, else onto a beat when within a third of one. */
@@ -830,9 +878,9 @@ private fun BeatmatchRow(enabled: Boolean, outBpm: Double, inBpm: Double, rate: 
             )
         }
         val note = when {
-            !enabled -> "The next song plays at its own tempo."
+            !enabled -> "Off: dragging doesn't snap to the beat, and the next song plays at its own tempo."
             abs(rate - 1.0) < 0.001 && MixTempo.match(outBpm, inBpm).matched ->
-                "Tempos already agree (${outBpm.roundToInt()} and ${inBpm.roundToInt()} BPM, same or double/half), so nothing is stretched."
+                "Dragging snaps to the beat. Tempos already agree (${outBpm.roundToInt()} and ${inBpm.roundToInt()} BPM, same or double/half), so nothing is stretched."
             abs(rate - 1.0) < 0.001 ->
                 "Too far apart to match (${outBpm.roundToInt()} → ${inBpm.roundToInt()} BPM). The next song plays at its own tempo."
             else -> {

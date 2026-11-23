@@ -76,6 +76,7 @@ import coil3.compose.AsyncImage
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.download.DownloadState
 import com.music.bitchord.download.Downloads
+import com.music.bitchord.playback.smart.AutomixModels
 import com.music.bitchord.ui.components.MixedGoldLabel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -139,6 +140,7 @@ fun MixedPlaylistScreen(
     }
     BackHandler(enabled = editorPair == null) { onBack() }
 
+    val songCount by rememberUpdatedState(songs.size)
     val listState = rememberLazyListState()
     val density = LocalDensity.current
     val itemPx = with(density) { (SONG_H + PILL_H).toPx() }
@@ -149,6 +151,19 @@ fun MixedPlaylistScreen(
     val readySongs = songs.filter { it.localUri != null }
     val minutes = readySongs.sumOf { MixedAnalysis.listedSeconds(it) }.div(60.0).roundToInt()
     val pending = songs.count { it.localUri == null }
+    val models by AutomixModels.state.collectAsStateWithLifecycle()
+    val modelNow = models
+    val unmeasured = readySongs.count { MixedAnalysis.tempoOf(it) == null }
+    val status = when {
+        modelNow is AutomixModels.State.Downloading ->
+            "Downloading the Automix model… ${(modelNow.fraction * 100).toInt()}%"
+        modelNow is AutomixModels.State.Failed && unmeasured > 0 -> "Couldn't download the Automix model. Tap to retry."
+        pending > 0 -> "Downloading $pending song${if (pending == 1) "" else "s"}…"
+        else -> "On this device"
+    }
+    val retryModel: (() -> Unit)? = if (modelNow is AutomixModels.State.Failed && unmeasured > 0) {
+        { AutomixModels.download(); MixedAnalysis.enqueue(readySongs) }
+    } else null
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         LazyColumn(
@@ -161,6 +176,8 @@ fun MixedPlaylistScreen(
                     playlist = playlist,
                     minutes = minutes,
                     pending = pending,
+                    status = status,
+                    onStatusClick = retryModel,
                     onBack = onBack,
                     onMenu = { menuOpen = true },
                     menuOpen = menuOpen,
@@ -235,8 +252,10 @@ fun MixedPlaylistScreen(
                                     dragDelta = 0f
                                 },
                                 onDragEnd = {
+                                    // Worked out here from the live state: the target the rows were drawn with
+                                    // was captured when this gesture began, and is long out of date by its end.
                                     val from = dragFrom
-                                    val to = dragTarget
+                                    val to = if (from >= 0) (from + (dragDelta / itemPx).roundToInt()).coerceIn(0, (songCount - 1).coerceAtLeast(0)) else -1
                                     dragFrom = -1
                                     dragDelta = 0f
                                     if (from >= 0 && to >= 0 && from != to) MixedPlaylists.move(playlist.id, from, to)
@@ -370,6 +389,8 @@ private fun Header(
     playlist: MixedPlaylist,
     minutes: Int,
     pending: Int,
+    status: String,
+    onStatusClick: (() -> Unit)?,
     onBack: () -> Unit,
     onMenu: () -> Unit,
     menuOpen: Boolean,
@@ -426,9 +447,10 @@ private fun Header(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            if (pending > 0) "Downloading $pending song${if (pending == 1) "" else "s"}…" else "On this device",
+            status,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (onStatusClick != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = if (onStatusClick != null) Modifier.clickable(onClick = onStatusClick).padding(8.dp) else Modifier,
         )
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

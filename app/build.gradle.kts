@@ -115,8 +115,15 @@ android {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
-            isUniversalApk = true
+            // -Pbitchord.arm64Only=true builds the one ABI a modern phone runs, for
+            // trying a change quickly; the normal build is unchanged.
+            if (project.findProperty("bitchord.arm64Only") == "true") {
+                include("arm64-v8a")
+                isUniversalApk = false
+            } else {
+                include("armeabi-v7a", "arm64-v8a", "x86_64")
+                isUniversalApk = true
+            }
         }
     }
 

@@ -66,7 +66,7 @@ jobs:
 
     # The watch app is left out: it is built per flavor and there is no "mix" one.
     - name: Build Signed Mix Release APK
-      run: ./gradlew assembleMixRelease -Pbitchord.bundleWear=false
+      run: ./gradlew assembleMixRelease -Pbitchord.bundleWear=false -Pbitchord.arm64Only=true
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4

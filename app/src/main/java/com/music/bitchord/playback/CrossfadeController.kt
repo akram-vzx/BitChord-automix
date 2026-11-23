@@ -1190,7 +1190,12 @@ class CrossfadeController(
         val manualMix = mixedJoin?.transition?.mix
 
         val plan = if (manualMix != null) {
-            MixedPlayback.planFor(manualMix, currentAnalysis, nextAnalysis, duration / 1000.0)
+            MixedPlayback.planFor(
+                manualMix,
+                com.music.bitchord.mixed.MixedAnalysis.analysisOf(currentItem.mediaId) ?: currentAnalysis,
+                com.music.bitchord.mixed.MixedAnalysis.analysisOf(nextItem.mediaId) ?: nextAnalysis,
+                duration / 1000.0,
+            )
         } else planTransition(
             analysis = currentAnalysis,
             nextAnalysis = nextAnalysis,
@@ -1225,7 +1230,13 @@ class CrossfadeController(
 
         // The loop mix first: a pair it can do never reaches the blend below.
         val loop = if (manualMix != null) {
-            MixedPlayback.loopPlanFor(manualMix, currentAnalysis, nextAnalysis, duration / 1000.0, nextDuration / 1000.0)
+            MixedPlayback.loopPlanFor(
+                manualMix,
+                com.music.bitchord.mixed.MixedAnalysis.analysisOf(currentItem.mediaId) ?: currentAnalysis,
+                com.music.bitchord.mixed.MixedAnalysis.analysisOf(nextItem.mediaId) ?: nextAnalysis,
+                duration / 1000.0,
+                nextDuration / 1000.0,
+            )
         } else loopPlanFor(
             player, currentItem, nextItem, currentAnalysis, nextAnalysis, duration, nextDuration, analysisState,
         )

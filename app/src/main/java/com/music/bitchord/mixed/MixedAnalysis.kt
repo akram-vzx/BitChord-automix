@@ -8,6 +8,7 @@ import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.AutomixPerformanceMode
 import com.music.bitchord.playback.smart.AnalysisStore
+import com.music.bitchord.playback.smart.AutomixModels
 import com.music.bitchord.playback.smart.SharedTrackAnalyzer
 import com.music.bitchord.playback.smart.TrackAnalysis
 import kotlinx.coroutines.CoroutineScope
@@ -162,10 +163,16 @@ object MixedAnalysis {
                     queue.remove(first.key)
                     first.value
                 } ?: break
-                try {
+                val carryOn = try {
                     measure(next)
                 } finally {
                     _working.value = _working.value - next.videoId
+                }
+                if (!carryOn) {
+                    // No model, so nothing behind this song can be measured either.
+                    synchronized(lock) { queue.clear() }
+                    _working.value = emptySet()
+                    break
                 }
             }
         } finally {
@@ -173,13 +180,15 @@ object MixedAnalysis {
         }
     }
 
-    private suspend fun measure(song: Song) {
+    /** False when the work should stop: the model Automix measures with could not be fetched. */
+    private suspend fun measure(song: Song): Boolean {
         val id = song.videoId
-        if (id in gaveUp) return
-        if (memory[id]?.isUsable == true) return
+        if (id in gaveUp) return true
+        if (memory[id]?.isUsable == true) return true
         warm(listOf(song))
-        if (memory[id]?.isUsable == true) return
-        val localUri = song.localUri ?: return
+        if (memory[id]?.isUsable == true) return true
+        val localUri = song.localUri ?: return true
+        if (!ensureModels()) return false
 
         AutomixEffort.setBackground(true)
         val analyzer = SharedTrackAnalyzer.get(appContext)
@@ -202,6 +211,29 @@ object MixedAnalysis {
         } else {
             gaveUp.add(id)
         }
+        return true
+    }
+
+    /**
+     * Automix's beat and vocal models are not shipped in the app; they are
+     * downloaded (about 30 MB) the first time something needs them. Measuring
+     * without them reads as "no evidence", so a mixed playlist asks for them
+     * itself and waits, rather than marking every song as unmeasurable.
+     */
+    private suspend fun ensureModels(): Boolean {
+        SharedTrackAnalyzer.get(appContext) // creating it installs AutomixModels
+        if (AutomixModels.state.value is AutomixModels.State.Ready) return true
+        AutomixModels.download()
+        delay(1_000)
+        val began = SystemClock.elapsedRealtime()
+        while (SystemClock.elapsedRealtime() - began < MODEL_WAIT_MS) {
+            when (AutomixModels.state.value) {
+                is AutomixModels.State.Ready -> return true
+                is AutomixModels.State.Failed -> return false
+                else -> delay(500)
+            }
+        }
+        return false
     }
 
     /** The length the song's row states, 0 when it states none. Never touches the disk, so it is safe while drawing. */
@@ -229,6 +261,7 @@ object MixedAnalysis {
     }
 
     private const val POLL_MS = 400L
+    private const val MODEL_WAIT_MS = 20 * 60_000L
     private const val START_GRACE_MS = 8_000L
     private const val MAX_WAIT_MS = 12 * 60_000L
 }
