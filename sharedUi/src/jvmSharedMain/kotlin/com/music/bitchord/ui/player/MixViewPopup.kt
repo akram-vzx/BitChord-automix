@@ -119,7 +119,8 @@ private val MidColor = Color(0xFFE08B35)
 private val HighColor = Color(0xFFF1DDC4)
 
 /** One deck's waveform layers, lows outermost. */
-private class WaveColors(val low: Color, val mid: Color, val high: Color)
+/** The three band colours of a waveform, taken from the artwork — the editor draws with the same ones. */
+class WaveColors(val low: Color, val mid: Color, val high: Color)
 
 /** The reference palette, until a cover's own colours are in. */
 private val DefaultWaveColors = WaveColors(LowColor, MidColor, HighColor)
@@ -608,7 +609,7 @@ private fun DrawScope.drawDeck(
  * cover for the process, so reopening the popup on the same blend is instant.
  */
 @Composable
-private fun rememberWaveColors(artworkUrl: String?): WaveColors {
+fun rememberWaveColors(artworkUrl: String?): WaveColors {
     val context = LocalPlatformContext.current
     var target by remember(artworkUrl) {
         mutableStateOf(artworkUrl?.let { WaveColorCache[it] } ?: DefaultWaveColors)

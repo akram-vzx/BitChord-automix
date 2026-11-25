@@ -1,11 +1,13 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.music.bitchord.mixed
 
-import android.net.Uri
-import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,14 +31,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -43,7 +45,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
@@ -62,6 +63,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -74,19 +76,19 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.os.SystemClock
 import com.music.bitchord.data.model.Song
-import com.music.bitchord.playback.smart.MixWaveform
-import com.music.bitchord.playback.smart.SharedTrackAnalyzer
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.ui.player.WaveColors
+import com.music.bitchord.ui.player.rememberWaveColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -94,30 +96,15 @@ import kotlin.math.roundToInt
 
 private val GREEN = Color(0xFF1ED760)
 private val WINDOW = Color(0xFF26262B)
-private val LOW_COLOR = Color(0xFF2A3FE0)
-private val MID_COLOR = Color(0xFFC27C2C)
-private val HIGH_COLOR = Color(0xFFF3E6CF)
 private val GRAPH_HEIGHT = 330.dp
 private val BAR_OPTIONS = listOf(1, 2, 4, 8, 16, 32)
-
-/** A stretch of a song's three-band waveform, with each band's own peak so every deck fills its lane. */
-private class WaveSlice(val from: Double, val to: Double, val bands: MixWaveform.Bands) {
-    private val lowMax = bands.low.maxOrNull()?.takeIf { it > 0f } ?: 1f
-    private val midMax = bands.mid.maxOrNull()?.takeIf { it > 0f } ?: 1f
-    private val highMax = bands.high.maxOrNull()?.takeIf { it > 0f } ?: 1f
-
-    private fun at(array: FloatArray, peak: Float, t: Double): Float {
-        if (t < from || t >= to || array.isEmpty()) return 0f
-        val index = ((t - from) / (to - from) * array.size).toInt().coerceIn(0, array.size - 1)
-        return (array[index] / peak).coerceIn(0f, 1f)
-    }
-
-    fun low(t: Double) = at(bands.low, lowMax, t)
-    fun mid(t: Double) = at(bands.mid, midMax, t)
-    fun high(t: Double) = at(bands.high, highMax, t)
-}
+private val CONTROL_WIDTH = 112.dp
+private val CONTROL_HEIGHT = 36.dp
 
 private fun lanesOf(tool: MixTool): List<Lane> = Lane.values().filter { it.tool == tool }
+
+private enum class Transport { STOPPED, PLAYING, PAUSED }
+
 
 /**
  * The editor for one join: the two songs' waveforms with the blend drawn over
@@ -125,8 +112,13 @@ private fun lanesOf(tool: MixTool): List<Lane> = Lane.values().filter { it.tool 
  *
  * Dragging the top strip slides the outgoing song under the blend window (where
  * on it the blend starts); dragging the bottom strip slides the incoming song
- * (which part of it comes in). Both pull onto the beats, and onto bar lines
- * when they are close to one.
+ * (which part of it comes in). Both pull onto the beat grid when Beatmatching is
+ * on, and onto bar lines when the bar magnet is. A tap or drag in the gap
+ * between the decks moves the cursor.
+ *
+ * The play button auditions the blend over what the waveforms show: from their
+ * left edge, to their right. Tapping it again pauses and resumes; holding it
+ * starts over.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -135,8 +127,9 @@ fun MixEditorScreen(
     from: Song,
     to: Song,
     onClose: () -> Unit,
-    onPreview: (positionMs: Long, mix: ManualMix) -> Unit,
-    onStopPreview: () -> Unit,
+    startPreview: (positionMs: Long, mix: ManualMix) -> Unit,
+    pausePreview: () -> Unit,
+    resumePreview: () -> Unit,
     /** The song now playing, its position in ms, and whether it is running — for the moving cursor. */
     playhead: () -> Triple<String?, Long, Boolean>,
 ) {
@@ -145,6 +138,7 @@ fun MixEditorScreen(
     val haptics = LocalHapticFeedback.current
     val playlists by MixedPlaylists.playlists.collectAsStateWithLifecycle()
     @Suppress("UNUSED_VARIABLE") val revision by MixedAnalysis.revision.collectAsStateWithLifecycle()
+    val loopNote by MixedPlayback.loopNote.collectAsStateWithLifecycle()
 
     val stored = playlists.firstOrNull { it.id == playlistId }?.transitionBetween(from, to)
     val analysisA = MixedAnalysis.analysisOf(from.videoId)
@@ -153,44 +147,11 @@ fun MixEditorScreen(
     val durationB = remember(to.videoId, analysisB) { analysisB?.duration?.takeIf { it > 1.0 } ?: MixedAnalysis.listedSeconds(to) }
     val gridA = remember(analysisA) { analysisA?.let { BeatGrid(it) } }
     val gridB = remember(analysisB) { analysisB?.let { BeatGrid(it) } }
+    val colorsA = rememberWaveColors(from.thumbnailUrl)
+    val colorsB = rememberWaveColors(to.thumbnailUrl)
 
     var mix by remember { mutableStateOf(stored?.mix) }
     var dirty by remember { mutableStateOf(false) }
-    var previewing by remember { mutableStateOf(false) }
-    val mixNow by rememberUpdatedState(mix)
-    var cursorT by remember { mutableStateOf(0.0) }
-    // The cursor follows the playing song. A loop mix is rendered apart from the player, whose own position
-    // no longer says where the blend is, so once the blend has begun the cursor runs on the clock instead.
-    LaunchedEffect(previewing) {
-        if (!previewing) return@LaunchedEffect
-        var wallRef = 0L
-        var haveRef = false
-        var lastNow = SystemClock.elapsedRealtime()
-        while (true) {
-            val m = mixNow ?: break
-            val (id, position, playing) = playhead()
-            val now = SystemClock.elapsedRealtime()
-            when (id) {
-                from.videoId -> {
-                    val into = position / 1000.0 - m.outStartSec
-                    if (m.usesLoops && into >= 0.0) {
-                        if (!haveRef) {
-                            wallRef = now - (into * 1000).toLong()
-                            haveRef = true
-                        }
-                        if (!playing) wallRef += now - lastNow
-                        cursorT = (now - wallRef) / 1000.0
-                    } else {
-                        haveRef = false
-                        cursorT = into
-                    }
-                }
-                to.videoId -> cursorT = (position / 1000.0 - m.inCueSec) / m.incomingRate.coerceAtLeast(0.1)
-            }
-            lastNow = now
-            delay(33)
-        }
-    }
     var barsMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var discard by remember { mutableStateOf(false) }
@@ -213,34 +174,144 @@ fun MixEditorScreen(
         dirty = true
     }
 
+    // ---- the waveforms ---------------------------------------------------------------------------
+    // Decoded once, kept in MixWaveCache for as long as the app lives, and decoded again only when the
+    // blend is moved far enough along its song that what is on screen is no longer in the slice.
     var waveA by remember { mutableStateOf<WaveSlice?>(null) }
     var waveB by remember { mutableStateOf<WaveSlice?>(null) }
-    LaunchedEffect(analysisA != null, durationA) {
-        val uriA = from.localUri
-        if (analysisA == null || durationA <= 0.0 || uriA == null) return@LaunchedEffect
-        waveA = withContext(Dispatchers.IO) {
-            val start = max(0.0, durationA - WAVE_SECONDS)
-            val bins = ((durationA - start) * WAVE_BINS_PER_SECOND).toInt().coerceAtLeast(64)
-            runCatching {
-                SharedTrackAnalyzer.get(context).mixWaveform(from.videoId, Uri.parse(uriA), durationA, start, durationA, bins)
-            }.getOrNull()?.let { WaveSlice(start, durationA, it) }
+    var triedA by remember { mutableStateOf(false) }
+    var triedB by remember { mutableStateOf(false) }
+    val outKey = ((mix?.outStartSec ?: 0.0) / 10).toInt()
+    val inKey = ((mix?.inCueSec ?: 0.0) / 10).toInt()
+    val barsKey = mix?.bars ?: 0
+    LaunchedEffect(analysisA != null, durationA, outKey, barsKey, mix != null) {
+        val m = mix ?: return@LaunchedEffect
+        if (analysisA == null || durationA <= 0.0) return@LaunchedEffect
+        val lead = m.lengthSec * VIEW_LEAD_FRACTION
+        val needFrom = m.outStartSec - lead - 4.0
+        val needTo = m.outStartSec + m.lengthSec + lead + 4.0
+        if (!MixWaveCache.covers(waveA, needFrom, needTo, durationA)) {
+            MixWaveCache.load(context, from, durationA, needFrom, needTo)?.let { waveA = it }
+        }
+        triedA = true
+    }
+    LaunchedEffect(analysisB != null, durationB, inKey, barsKey, mix != null) {
+        val m = mix ?: return@LaunchedEffect
+        if (analysisB == null || durationB <= 0.0) return@LaunchedEffect
+        val lead = m.lengthSec * VIEW_LEAD_FRACTION * m.incomingRate
+        val needFrom = m.inCueSec - lead - 4.0
+        val needTo = m.inCueSec + m.lengthSec * m.incomingRate + lead + 4.0
+        if (!MixWaveCache.covers(waveB, needFrom, needTo, durationB)) {
+            MixWaveCache.load(context, to, durationB, needFrom, needTo)?.let { waveB = it }
+        }
+        triedB = true
+    }
+    val loading = mix != null && analysisA != null && analysisB != null && !(triedA && triedB)
+
+    // ---- the audition ------------------------------------------------------------------------------
+    // Seconds from the start of the blend; NaN is "at the start of what the waveforms show".
+    var transport by remember { mutableStateOf(Transport.STOPPED) }
+    var cursorT by remember { mutableStateOf(Double.NaN) }
+    var resumeT by remember { mutableStateOf<Double?>(null) }
+    var startedAtMs by remember { mutableStateOf(0L) }
+    var settled by remember { mutableStateOf(true) }
+    val mixNow by rememberUpdatedState(mix)
+
+    fun leadOf(m: ManualMix) = m.lengthSec * VIEW_LEAD_FRACTION
+
+    fun startFrom(requestedT: Double) {
+        val m = mix ?: return
+        // The song can only be started before the blend: the engine arms it from there.
+        val t = requestedT.coerceIn(-leadOf(m), -MIN_PRE_BLEND_SECONDS)
+        val positionSec = max(0.0, m.outStartSec + t)
+        cursorT = positionSec - m.outStartSec
+        resumeT = null
+        startedAtMs = (positionSec * 1000).toLong()
+        settled = false
+        transport = Transport.PLAYING
+        startPreview(startedAtMs, m)
+    }
+
+    fun togglePlay() {
+        val m = mix ?: return
+        when (transport) {
+            Transport.STOPPED -> startFrom(resumeT ?: -leadOf(m))
+            Transport.PLAYING -> { pausePreview(); transport = Transport.PAUSED }
+            Transport.PAUSED -> { resumePreview(); transport = Transport.PLAYING }
         }
     }
-    LaunchedEffect(analysisB != null, durationB) {
-        val uriB = to.localUri
-        if (analysisB == null || durationB <= 0.0 || uriB == null) return@LaunchedEffect
-        waveB = withContext(Dispatchers.IO) {
-            val end = min(durationB, WAVE_SECONDS)
-            val bins = (end * WAVE_BINS_PER_SECOND).toInt().coerceAtLeast(64)
-            runCatching {
-                SharedTrackAnalyzer.get(context).mixWaveform(to.videoId, Uri.parse(uriB), durationB, 0.0, end, bins)
-            }.getOrNull()?.let { WaveSlice(0.0, end, it) }
+
+    fun restart() {
+        val m = mix ?: return
+        resumeT = null
+        startFrom(-leadOf(m))
+    }
+
+    fun scrub(t: Double) {
+        val m = mix ?: return
+        val clamped = t.coerceIn(-leadOf(m), m.lengthSec + leadOf(m))
+        if (transport == Transport.PLAYING) {
+            startFrom(clamped)
+        } else {
+            if (transport == Transport.PAUSED) pausePreview()
+            transport = Transport.STOPPED
+            cursorT = clamped
+            resumeT = clamped
         }
     }
-    // While auditioning, edits are heard the next time the engine looks.
-    LaunchedEffect(mix, previewing) {
+
+    // While auditioning, edits are what the engine arms next.
+    LaunchedEffect(mix) {
         val m = mix
-        if (previewing && m != null) MixedPlayback.setPreview(from.videoId, to.videoId, m)
+        if (transport != Transport.STOPPED && m != null) MixedPlayback.setPreview(from.videoId, to.videoId, m)
+    }
+
+    // The cursor follows the playing song. A loop mix is rendered apart from the player, whose own position
+    // no longer says where the blend is, so once the blend has begun the cursor runs on the clock instead.
+    LaunchedEffect(transport) {
+        if (transport != Transport.PLAYING) return@LaunchedEffect
+        var wallRef = 0L
+        var haveRef = false
+        val began = SystemClock.elapsedRealtime()
+        var lastNow = began
+        while (true) {
+            val m = mixNow ?: break
+            val (id, position, playing) = playhead()
+            val now = SystemClock.elapsedRealtime()
+            if (!settled) {
+                // Until the player reports the new queue, the old one's position is not the cursor's business.
+                val arrived = (id == from.videoId && abs(position - startedAtMs) < 2500L) || id == to.videoId
+                if (arrived || now - began > 3000L) settled = true else { delay(33); continue }
+            }
+            when (id) {
+                from.videoId -> {
+                    val into = position / 1000.0 - m.outStartSec
+                    if (m.usesLoops && into >= 0.0) {
+                        if (!haveRef) {
+                            wallRef = now - (into * 1000).toLong()
+                            haveRef = true
+                        }
+                        if (!playing) wallRef += now - lastNow
+                        cursorT = (now - wallRef) / 1000.0
+                    } else {
+                        haveRef = false
+                        cursorT = into
+                    }
+                }
+                to.videoId -> cursorT = (position / 1000.0 - m.inCueSec) / m.incomingRate.coerceAtLeast(0.1)
+                else -> { transport = Transport.STOPPED; cursorT = Double.NaN; break }
+            }
+            // The right edge of what the waveforms show: the audition is over.
+            if (cursorT >= m.lengthSec + leadOf(m)) {
+                pausePreview()
+                transport = Transport.STOPPED
+                cursorT = Double.NaN
+                resumeT = null
+                break
+            }
+            lastNow = now
+            delay(33)
+        }
     }
 
     BackHandler {
@@ -322,9 +393,12 @@ fun MixEditorScreen(
             durationB = durationB,
             waveA = waveA,
             waveB = waveB,
+            colorsA = colorsA,
+            colorsB = colorsB,
             editingLane = editingLane,
-            previewing = previewing,
-            cursorSeconds = (if (previewing) cursorT else -(current.lengthSec * VIEW_LEAD_FRACTION)).toFloat(),
+            playing = transport == Transport.PLAYING,
+            loading = loading,
+            cursorSeconds = (if (cursorT.isNaN()) -leadOf(current) else cursorT).toFloat(),
             onChange = { change(it) },
             onSnap = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
             onPickLane = { lane, x ->
@@ -333,23 +407,16 @@ fun MixEditorScreen(
                 // The point lands on the line where it was tapped; the line itself does not change shape.
                 change(current.withCurve(lane, current.curve(lane).inserted(x).first))
             },
-            onTogglePreview = {
-                if (previewing) {
-                    previewing = false
-                    onStopPreview()
-                } else {
-                    previewing = true
-                    val lead = current.lengthSec * VIEW_LEAD_FRACTION
-                    cursorT = -lead
-                    onPreview(max(0L, ((current.outStartSec - lead) * 1000).toLong()), current)
-                }
-            },
+            onTogglePlay = { togglePlay() },
+            onRestart = { restart() },
+            onScrub = { scrub(it) },
             barsMenu = barsMenu,
             onBarsMenu = { barsMenu = it },
         )
 
         // ---- everything below the graph scrolls ----------------------------------------
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+        Box(Modifier.weight(1f)) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             val tool = customTool
             if (tool != null && editingLane != null) {
                 LaneEditorBar(
@@ -393,16 +460,38 @@ fun MixEditorScreen(
                 if (current.composite == PresetCatalog.CUSTOM) {
                     MixTool.values().forEach { tool ->
                         ToolRow(tool, PresetCatalog.labelOf(tool, current)) { sheetTool = tool }
+                        if (tool == MixTool.LOOPING && current.usesLoops && loopNote != null) {
+                            Text(
+                                "The loop can't play here: $loopNote. This blend plays without it.",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+                            )
+                        }
                     }
                 }
                 BeatmatchRow(
-                    enabled = current.tempoMatch,
+                    mix = current,
                     outBpm = analysisA.bpm,
                     inBpm = analysisB.bpm,
-                    rate = current.incomingRate,
-                    onToggle = { change(current.copy(tempoMatch = it)) },
+                    onBeatmatch = { change(current.copy(tempoMatch = it)) },
+                    onBarMagnet = { change(current.copy(barMagnet = it)) },
                 )
                 Spacer(Modifier.height(32.dp))
+            }
+            }
+            // Until the waveforms are drawn there is nothing to edit.
+            if (loading) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                            }
+                        },
+                )
             }
         }
     }
@@ -465,6 +554,7 @@ fun MixEditorScreen(
     }
 }
 
+
 // ---------------------------------------------------------------------------------------------
 // graph
 // ---------------------------------------------------------------------------------------------
@@ -478,13 +568,18 @@ private fun MixGraph(
     durationB: Double,
     waveA: WaveSlice?,
     waveB: WaveSlice?,
+    colorsA: WaveColors,
+    colorsB: WaveColors,
     editingLane: Lane?,
-    previewing: Boolean,
+    playing: Boolean,
+    loading: Boolean,
     cursorSeconds: Float,
     onChange: (ManualMix) -> Unit,
     onSnap: () -> Unit,
     onPickLane: (Lane, Float) -> Unit,
-    onTogglePreview: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onRestart: () -> Unit,
+    onScrub: (Double) -> Unit,
     barsMenu: Boolean,
     onBarsMenu: (Boolean) -> Unit,
 ) {
@@ -494,12 +589,14 @@ private fun MixGraph(
     val onChangeNow by rememberUpdatedState(onChange)
     val onSnapNow by rememberUpdatedState(onSnap)
     val onPickLaneNow by rememberUpdatedState(onPickLane)
+    val onScrubNow by rememberUpdatedState(onScrub)
     var dragNode by remember { mutableIntStateOf(-1) }
 
     // Raw positions while a deck is being dragged; the snapped value is what the mix gets.
     var rawOut by remember { mutableStateOf(0.0) }
     var rawIn by remember { mutableStateOf(0.0) }
     var lastSnapped by remember { mutableStateOf(Double.NaN) }
+    val density = LocalDensity.current
 
     Box(
         Modifier
@@ -508,6 +605,35 @@ private fun MixGraph(
             .onSizeChanged { size = it },
     ) {
         val geometry = GraphGeometry(size.width.toFloat(), size.height.toFloat(), mix)
+
+        // The gap between the decks moves the cursor, whatever else is going on.
+        val scrubbing = Modifier
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { pos ->
+                        val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), currentMix)
+                        if (g.inGap(pos.y)) onScrubNow(((pos.x - g.left) / g.pxPerSec).toDouble())
+                    },
+                )
+            }
+            .pointerInput(Unit) {
+                var active = false
+                detectDragGestures(
+                    onDragStart = { pos ->
+                        val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), currentMix)
+                        active = g.inGap(pos.y)
+                    },
+                    onDragEnd = { active = false },
+                    onDragCancel = { active = false },
+                    onDrag = { change, _ ->
+                        if (!active) return@detectDragGestures
+                        change.consume()
+                        val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), currentMix)
+                        if (g.pxPerSec > 0f) onScrubNow(((change.position.x - g.left) / g.pxPerSec).toDouble())
+                    },
+                )
+            }
+
         val gestures = if (editingLane != null) {
             Modifier
                 .pointerInput(Unit) {
@@ -567,36 +693,42 @@ private fun MixGraph(
                     },
                 )
             }.pointerInput(durationA, durationB) {
-                var deck = 0
+                var deck = -1
                 detectDragGestures(
                     onDragStart = { pos ->
-                        deck = if (pos.y < size.height / 2f) 0 else 1
+                        val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), currentMix)
+                        deck = when {
+                            g.inGap(pos.y) -> -1
+                            pos.y < size.height / 2f -> 0
+                            else -> 1
+                        }
                         rawOut = currentMix.outStartSec
                         rawIn = currentMix.inCueSec
                         lastSnapped = Double.NaN
                     },
                     onDrag = { change, amount ->
+                        if (deck < 0) return@detectDragGestures
                         change.consume()
                         val m = currentMix
                         val g = GraphGeometry(size.width.toFloat(), size.height.toFloat(), m)
                         if (g.pxPerSec <= 0f) return@detectDragGestures
                         if (deck == 0) {
                             rawOut -= amount.x / g.pxPerSec
-                            val snapped = if (m.tempoMatch) gridA?.let { magnetBar(it, rawOut) } ?: rawOut else rawOut
+                            val snapped = gridA?.let { snapTime(it, rawOut, m.tempoMatch, m.barMagnet) } ?: rawOut
                             val clamped = snapped.coerceIn(0.0, max(0.0, durationA - m.lengthSec))
                             if (clamped != m.outStartSec) {
                                 if (clamped != lastSnapped && snapped != rawOut) onSnapNow()
                                 lastSnapped = clamped
-                                onChangeNow(m.copy(outStartSec = clamped, composite = m.composite))
+                                onChangeNow(m.copy(outStartSec = clamped))
                             }
                         } else {
                             rawIn -= amount.x / g.pxPerSec * m.incomingRate
-                            val snapped = if (m.tempoMatch) gridB?.let { magnetBar(it, rawIn) } ?: rawIn else rawIn
+                            val snapped = gridB?.let { snapTime(it, rawIn, m.tempoMatch, m.barMagnet) } ?: rawIn
                             val clamped = snapped.coerceIn(0.0, max(0.0, durationB - m.lengthSec * m.incomingRate - 1.0))
                             if (clamped != m.inCueSec) {
                                 if (clamped != lastSnapped && snapped != rawIn) onSnapNow()
                                 lastSnapped = clamped
-                                onChangeNow(m.copy(inCueSec = clamped, composite = m.composite))
+                                onChangeNow(m.copy(inCueSec = clamped))
                             }
                         }
                     },
@@ -604,51 +736,67 @@ private fun MixGraph(
             }
         }
 
-        Canvas(Modifier.fillMaxSize().then(gestures)) {
-            drawGraph(geometry, mix, gridA, gridB, waveA, waveB, editingLane)
+        Canvas(Modifier.fillMaxSize().then(scrubbing).then(gestures)) {
+            drawGraph(geometry, mix, gridA, gridB, waveA, waveB, colorsA, colorsB, editingLane)
             drawCursor(geometry, cursorSeconds)
+            if (loading) drawRect(Color.Black.copy(alpha = 0.55f))
         }
 
         // The audition button: in the gap between the decks, or — while a line is being edited, so it is
-        // not in the way of the line — down where the bars label is.
+        // not in the way of the line — down where the bars label is. It turns while the waveforms load.
         val playButton: @Composable (Modifier) -> Unit = { modifier ->
             Box(
                 modifier
-                    .size(width = 64.dp, height = 36.dp)
+                    .size(width = CONTROL_WIDTH, height = CONTROL_HEIGHT)
                     .clip(RoundedCornerShape(14.dp))
                     .background(Color(0xFF3A3A40))
-                    .clickable(onClick = onTogglePreview),
+                    .combinedClickable(enabled = !loading, onClick = onTogglePlay, onLongClick = onRestart),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    if (previewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                    contentDescription = if (previewing) "Stop" else "Preview",
-                    tint = Color.White,
-                )
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                } else {
+                    Icon(
+                        if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = if (playing) "Pause" else "Play",
+                        tint = Color.White,
+                    )
+                }
             }
         }
-        if (editingLane == null) playButton(Modifier.align(Alignment.Center))
+        if (editingLane == null) {
+            val gapCentreDp = with(density) { geometry.gapCentre.toDp() }
+            playButton(Modifier.align(Alignment.TopCenter).offset(y = gapCentreDp - CONTROL_HEIGHT / 2))
+        }
 
-        // "8 bars", attached to the bottom of the window.
-        val barsLabelX = with(androidx.compose.ui.platform.LocalDensity.current) { ((geometry.left + geometry.right) / 2f).toDp() }
-        Box(Modifier.align(Alignment.BottomStart).padding(start = (barsLabelX - (if (editingLane == null) 44.dp else 32.dp)).coerceAtLeast(0.dp))) {
-            if (editingLane != null) playButton(Modifier) else Row(
-                Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0xFF2E2E33)).clickable { onBarsMenu(true) }
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("${mix.bars} bars", fontSize = 15.sp, color = Color.White)
-                Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-            }
-            DropdownMenu(expanded = barsMenu, onDismissRequest = { onBarsMenu(false) }) {
-                BAR_OPTIONS.forEach { bars ->
-                    DropdownMenuItem(
-                        text = { Text("$bars bars") },
-                        onClick = {
-                            onBarsMenu(false)
-                            onChangeNow(currentMix.copy(bars = bars, composite = currentMix.composite))
-                        },
-                    )
+        // "8 bars", attached to the bottom of the window — or the play button, in its place, while a line is edited.
+        val centreDp = with(density) { ((geometry.left + geometry.right) / 2f).toDp() }
+        Box(Modifier.align(Alignment.BottomStart).padding(start = (centreDp - CONTROL_WIDTH / 2).coerceAtLeast(0.dp))) {
+            if (editingLane != null) {
+                playButton(Modifier)
+            } else {
+                Row(
+                    Modifier
+                        .size(width = CONTROL_WIDTH, height = CONTROL_HEIGHT)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF2E2E33))
+                        .clickable { onBarsMenu(true) },
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("${mix.bars} bars", fontSize = 15.sp, color = Color.White)
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = barsMenu, onDismissRequest = { onBarsMenu(false) }) {
+                    BAR_OPTIONS.forEach { bars ->
+                        DropdownMenuItem(
+                            text = { Text("$bars bars") },
+                            onClick = {
+                                onBarsMenu(false)
+                                onChangeNow(currentMix.copy(bars = bars))
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -665,12 +813,16 @@ private class GraphGeometry(val width: Float, val height: Float, val mix: Manual
     val topDeckTop = 0f
     val bottomDeckTop = deckHeight + gap
 
+    /** The middle of the gap between the decks, where the play button sits. */
+    val gapCentre = deckHeight + gap / 2f
+
     fun bandTop(lane: Lane) = if (lane.outgoing) topDeckTop else bottomDeckTop
     private val pad = 10f
     fun laneY(lane: Lane, value: Float): Float = bandTop(lane) + pad + (1f - value) * (deckHeight - 2 * pad)
     fun curveX(x: Float): Float = left + x * (right - left)
     fun xToCurve(px: Float): Float = ((px - left) / (right - left)).coerceIn(0f, 1f)
     fun yToValue(lane: Lane, py: Float): Float = (1f - (py - bandTop(lane) - pad) / (deckHeight - 2 * pad)).coerceIn(0f, 1f)
+    fun inGap(y: Float): Boolean = y in (deckHeight - 6f)..(bottomDeckTop + 6f)
     fun inLaneBand(lane: Lane, pos: Offset): Boolean = pos.y in bandTop(lane)..(bandTop(lane) + deckHeight) && pos.x in left..right
 
     fun hitNode(lane: Lane, curve: Curve, pos: Offset, radius: Float): Int {
@@ -709,11 +861,16 @@ private fun nearestLane(g: GraphGeometry, mix: ManualMix, pos: Offset, radius: F
     return best
 }
 
-/** Pulls [seconds] onto a bar line when it is within half a beat of one, else onto a beat when within a third of one. */
-private fun magnetBar(grid: BeatGrid, seconds: Double): Double {
-    val bar = grid.snapToBar(seconds)
-    if (abs(bar - seconds) <= grid.beatSec * 0.5) return bar
-    return grid.magnet(seconds, grid.beatSec * 0.33)
+/**
+ * Where a dragged position lands: on the nearest bar line when the bar magnet is on, else on a beat when
+ * Beatmatching is. With both on, a bar line wins when it is within half a beat and the beat grid otherwise.
+ */
+private fun snapTime(grid: BeatGrid, seconds: Double, beatMagnet: Boolean, barMagnet: Boolean): Double {
+    if (barMagnet) {
+        val bar = grid.snapToBar(seconds)
+        if (abs(bar - seconds) <= grid.beatSec * (if (beatMagnet) 0.5 else 2.0)) return bar
+    }
+    return if (beatMagnet) grid.magnet(seconds, grid.beatSec * 0.33) else seconds
 }
 
 private fun DrawScope.drawGraph(
@@ -723,53 +880,16 @@ private fun DrawScope.drawGraph(
     gridB: BeatGrid?,
     waveA: WaveSlice?,
     waveB: WaveSlice?,
+    colorsA: WaveColors,
+    colorsB: WaveColors,
     editingLane: Lane?,
 ) {
     if (g.width <= 0f) return
-    val step = 3.dp.toPx()
+    val columnStep = 2.dp.toPx()
     val rate = mix.incomingRate
     val loopLen = mix.loopBeats * mix.beatSec
 
-    // Waveforms. The window is full strength, what lies outside it is dimmed.
-    fun deck(top: Float, timeAt: (Float) -> Double, wave: WaveSlice?, grid: BeatGrid?, windowStartSec: Double, toWall: (Double) -> Float) {
-        val cy = top + g.deckHeight / 2f
-        val half = g.deckHeight / 2f * 0.92f
-        if (wave != null) {
-            var x = 0f
-            while (x < g.width) {
-                val t = timeAt(x)
-                val alpha = if (x in g.left..g.right) 1f else 0.4f
-                val low = wave.low(t)
-                val mid = wave.mid(t)
-                val high = wave.high(t)
-                if (low > 0f || mid > 0f || high > 0f) {
-                    drawLine(LOW_COLOR.copy(alpha = alpha), Offset(x, cy - low * half), Offset(x, cy + low * half), strokeWidth = step * 0.7f)
-                    drawLine(MID_COLOR.copy(alpha = alpha), Offset(x, cy - mid * half * 0.8f), Offset(x, cy + mid * half * 0.8f), strokeWidth = step * 0.7f)
-                    drawLine(HIGH_COLOR.copy(alpha = alpha), Offset(x, cy - high * half * 0.45f), Offset(x, cy + high * half * 0.45f), strokeWidth = step * 0.7f)
-                }
-                x += step
-            }
-        } else {
-            drawLine(Color.White.copy(alpha = 0.2f), Offset(0f, cy), Offset(g.width, cy), strokeWidth = 2f)
-        }
-        // Beat lines inside the window.
-        if (grid != null) {
-            val first = (windowStartSec / grid.beatSec).toLong() - 1
-            var n = first
-            while (true) {
-                val t = n * grid.beatSec
-                val x = toWall(t)
-                if (x > g.right) break
-                if (x >= g.left) {
-                    val bar = n % 4L == 0L
-                    drawLine(Color.White.copy(alpha = if (bar) 0.22f else 0.09f), Offset(x, top), Offset(x, top + g.deckHeight), strokeWidth = if (bar) 2f else 1f)
-                }
-                n++
-            }
-        }
-    }
-
-    // The window itself behind the waveforms' bright part.
+    // The window itself, behind the waveforms' bright part.
     drawRoundRect(
         WINDOW,
         topLeft = Offset(g.left, 0f),
@@ -777,23 +897,74 @@ private fun DrawScope.drawGraph(
         cornerRadius = CornerRadius(18.dp.toPx()),
     )
 
+    // A deck's waveform, one bar per column of the screen: each bar is the loudest of the bins under it, so
+    // a long blend packs more waveform into the same width instead of drawing thicker, jumping bars.
+    fun deck(
+        top: Float,
+        wave: WaveSlice?,
+        colors: WaveColors,
+        grid: BeatGrid?,
+        timeAt: (Float) -> Double,
+        secondsPerColumn: Double,
+        windowStartSec: Double,
+        toWall: (Double) -> Float,
+    ) {
+        val cy = top + g.deckHeight / 2f
+        val half = g.deckHeight / 2f * 0.86f
+        if (wave != null) {
+            var x = 0f
+            while (x < g.width) {
+                val t0 = timeAt(x)
+                val t1 = t0 + secondsPerColumn
+                val alpha = if (x in g.left..g.right) 1f else 0.4f
+                val low = wave.low(t0, t1) * half
+                val mid = wave.mid(t0, t1) * half
+                val high = wave.high(t0, t1) * half
+                val w = columnStep + 0.6f
+                if (low > 0f) drawRect(colors.low.copy(alpha = alpha), Offset(x, cy - low), Size(w, low * 2f))
+                if (mid > 0f) drawRect(colors.mid.copy(alpha = alpha), Offset(x, cy - mid), Size(w, mid * 2f))
+                if (high > 0f) drawRect(colors.high.copy(alpha = alpha), Offset(x, cy - high), Size(w, high * 2f))
+                x += columnStep
+            }
+        } else {
+            drawLine(colors.mid.copy(alpha = 0.35f), Offset(0f, cy), Offset(g.width, cy), strokeWidth = 1.dp.toPx())
+        }
+        // Beat lines inside the window.
+        if (grid != null) {
+            var n = (windowStartSec / grid.beatSec).toLong() - 1
+            while (true) {
+                val x = toWall(n * grid.beatSec)
+                if (x > g.right) break
+                if (x >= g.left) {
+                    val bar = n % 4L == 0L
+                    drawLine(Color.White.copy(alpha = if (bar) 0.14f else 0.06f), Offset(x, top), Offset(x, top + g.deckHeight), strokeWidth = 1.dp.toPx())
+                }
+                n++
+            }
+        }
+    }
+
     deck(
         top = g.topDeckTop,
+        wave = waveA,
+        colors = colorsA,
+        grid = gridA,
         // With a loop, the blend shows the looped beats copied one after another: the outgoing song is that much longer.
         timeAt = { x ->
             val into = ((x - g.left) / g.pxPerSec).toDouble()
             if (loopLen > 0.0 && into >= 0.0) mix.outStartSec + into % loopLen else mix.outStartSec + into
         },
-        wave = waveA,
-        grid = gridA,
+        secondsPerColumn = columnStep / g.pxPerSec.toDouble(),
         windowStartSec = mix.outStartSec,
         toWall = { t -> g.left + ((t - mix.outStartSec) * g.pxPerSec).toFloat() },
     )
     deck(
         top = g.bottomDeckTop,
-        timeAt = { x -> mix.inCueSec + (x - g.left) / g.pxPerSec * rate },
         wave = waveB,
+        colors = colorsB,
         grid = gridB,
+        timeAt = { x -> mix.inCueSec + ((x - g.left) / g.pxPerSec).toDouble() * rate },
+        secondsPerColumn = columnStep / g.pxPerSec.toDouble() * rate,
         windowStartSec = mix.inCueSec,
         toWall = { t -> g.left + ((t - mix.inCueSec) / rate * g.pxPerSec).toFloat() },
     )
@@ -814,25 +985,11 @@ private fun DrawScope.drawGraph(
         }
     }
 
-    // Window border.
-    drawRoundRect(
-        Color.White.copy(alpha = 0.28f),
-        topLeft = Offset(g.left, 0f),
-        size = Size(g.right - g.left, g.height - g.height * 0.1f),
-        cornerRadius = CornerRadius(18.dp.toPx()),
-        style = Stroke(width = 1.5.dp.toPx()),
-    )
-
     // Lanes. The volume lanes are always there; the others only when they do something.
     Lane.values().forEach { lane ->
         val curve = mix.curve(lane)
-        val flat = when (lane) {
-            Lane.ECHO_OUT -> curve.points.all { it.y <= 0.05f }
-            Lane.VOLUME_OUT, Lane.VOLUME_IN -> false
-            else -> curve.points.all { it.y >= 0.95f }
-        }
         val editing = lane == editingLane
-        if (flat && !editing) return@forEach
+        if (isAtRest(lane, curve) && !editing) return@forEach
         val color = Color(lane.tool.argb)
         val path = Path()
         curve.points.forEachIndexed { i, p ->
@@ -923,28 +1080,50 @@ private fun ToolRow(tool: MixTool, value: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun BeatmatchRow(enabled: Boolean, outBpm: Double, inBpm: Double, rate: Double, onToggle: (Boolean) -> Unit) {
+private fun BeatmatchRow(
+    mix: ManualMix,
+    outBpm: Double,
+    inBpm: Double,
+    onBeatmatch: (Boolean) -> Unit,
+    onBarMagnet: (Boolean) -> Unit,
+) {
+    val rate = mix.incomingRate
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Beatmatching", fontSize = 22.sp, modifier = Modifier.weight(1f))
             Switch(
-                checked = enabled,
-                onCheckedChange = onToggle,
+                checked = mix.tempoMatch,
+                onCheckedChange = onBeatmatch,
                 colors = SwitchDefaults.colors(checkedTrackColor = GREEN, checkedThumbColor = Color.White),
             )
         }
         val note = when {
-            !enabled -> "Off: dragging doesn't snap to the beat, and the next song plays at its own tempo."
+            !mix.tempoMatch -> "Off: the next song plays at its own tempo, and dragging doesn't snap to the beat."
             abs(rate - 1.0) < 0.001 && MixTempo.match(outBpm, inBpm).matched ->
                 "Dragging snaps to the beat. Tempos already agree (${outBpm.roundToInt()} and ${inBpm.roundToInt()} BPM, same or double/half), so nothing is stretched."
             abs(rate - 1.0) < 0.001 ->
-                "Too far apart to match (${outBpm.roundToInt()} → ${inBpm.roundToInt()} BPM). The next song plays at its own tempo."
+                "Dragging snaps to the beat. The tempos are too far apart to match (${outBpm.roundToInt()} → ${inBpm.roundToInt()} BPM), so the next song plays at its own."
             else -> {
                 val percent = (rate - 1.0) * 100.0
-                "The next song is ${if (percent >= 0) "sped up" else "slowed down"} ${"%.1f".format(abs(percent))}% to ${outBpm.roundToInt()} BPM during the blend, then returns to normal."
+                "Dragging snaps to the beat. The next song is ${if (percent >= 0) "sped up" else "slowed down"} ${"%.1f".format(abs(percent))}% to ${outBpm.roundToInt()} BPM during the blend, then returns to normal."
             }
         }
         Text(note, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Bar magnet", fontSize = 22.sp, modifier = Modifier.weight(1f))
+            Switch(
+                checked = mix.barMagnet,
+                onCheckedChange = onBarMagnet,
+                colors = SwitchDefaults.colors(checkedTrackColor = GREEN, checkedThumbColor = Color.White),
+            )
+        }
+        Text(
+            if (mix.barMagnet) "Dragging snaps from bar line to bar line." else "Off: dragging doesn't snap to bar lines.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
@@ -988,8 +1167,9 @@ private fun LaneEditorBar(
     }
 }
 
-private const val WAVE_SECONDS = 150.0
-private const val WAVE_BINS_PER_SECOND = 8
 
 /** How much of the blend's length the waveform shows to the left of the window: where playback starts. */
 private const val VIEW_LEAD_FRACTION = 0.17 / (0.83 - 0.17)
+
+/** The audition is started at least this long before the blend, so the engine has time to arm it. */
+private const val MIN_PRE_BLEND_SECONDS = 0.75

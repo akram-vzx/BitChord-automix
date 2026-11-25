@@ -347,6 +347,11 @@ class CrossfadeController(
      */
     private var smartFadeActive = false
 
+    /** The transition now being armed or run is a mixed playlist's own, which plays whether or not Automix is switched on. */
+    private var mixedRun = false
+
+    private fun smartOn(): Boolean = AppSettings.smartFadeEnabled.value || mixedRun
+
     /**
      * Where the incoming track is cued when the lap hands the queue over, in
      * its own timeline ms. Standard fades always leave this at 0 — a plain
@@ -917,7 +922,7 @@ class CrossfadeController(
     // ---- Ticker -------------------------------------------------------------
 
     private fun tick() {
-        if (visualGeneration != null && !AppSettings.smartFadeEnabled.value) cancelAutoMixVisual()
+        if (visualGeneration != null && !smartOn()) cancelAutoMixVisual()
         // A pause has to take the other player with it, or one half of the blend
         // carries on alone over a stopped one. Mirrored every tick rather than
         // handled as an event, so audio focus loss, the sleep timer and the
@@ -988,7 +993,7 @@ class CrossfadeController(
      * playing is left for the playing path to decide.
      */
     private fun refreshMarkerWhilePaused(player: ExoPlayer) {
-        if (!AppSettings.smartFadeEnabled.value) return
+        if (!AppSettings.smartFadeEnabled.value && mixedJoinFor(player) == null) return
         val now = SystemClock.elapsedRealtime()
         // The mix popup reads the same plan, and someone looking at it is
         // waiting on the next answer rather than glancing at a marker.
@@ -1188,6 +1193,7 @@ class CrossfadeController(
             return
         }
         val manualMix = mixedJoin?.transition?.mix
+        mixedRun = manualMix != null
 
         val plan = if (manualMix != null) {
             MixedPlayback.planFor(
@@ -1226,10 +1232,16 @@ class CrossfadeController(
 
         lastSmartPlan = plan
         lastSmartPlanStartMs = (plan.transitionStart * 1000).roundToLong()
-        publishMixPreview(currentItem, nextItem, duration, nextDuration, currentAnalysis, nextAnalysis, analysisState, plan, advanced)
+        // The overview shows the join as the listener made it: its own lanes, on its own songs' measurements.
+        publishMixPreview(
+            currentItem, nextItem, duration, nextDuration,
+            if (manualMix != null) com.music.bitchord.mixed.MixedAnalysis.analysisOf(currentItem.mediaId) ?: currentAnalysis else currentAnalysis,
+            if (manualMix != null) com.music.bitchord.mixed.MixedAnalysis.analysisOf(nextItem.mediaId) ?: nextAnalysis else nextAnalysis,
+            analysisState, plan, advanced, manualMix,
+        )
 
         // The loop mix first: a pair it can do never reaches the blend below.
-        val loop = if (manualMix != null) {
+        val loop = (if (manualMix != null) {
             MixedPlayback.loopPlanFor(
                 manualMix,
                 com.music.bitchord.mixed.MixedAnalysis.analysisOf(currentItem.mediaId) ?: currentAnalysis,
@@ -1239,7 +1251,23 @@ class CrossfadeController(
             )
         } else loopPlanFor(
             player, currentItem, nextItem, currentAnalysis, nextAnalysis, duration, nextDuration, analysisState,
-        )
+        )).let { planned ->
+            // A mixed playlist's loop skips the planner's own checks, so it makes the output's here: a loop that
+            // cannot be played must give way to the blend, not leave the pair with nothing at all.
+            if (manualMix != null && planned != null) {
+                val pair = "${currentItem.mediaId}->${nextItem.mediaId}"
+                val why = if (pair == manualLoopSkipped) "it fell back once already" else manualLoopRefusal(player)
+                if (why != null) {
+                    com.music.bitchord.mixed.MixedPlayback.noteLoop(why)
+                    noteLoopVerdict(pair, null, why)
+                    null
+                } else {
+                    com.music.bitchord.mixed.MixedPlayback.noteLoop(null)
+                    manualLoopPair = pair
+                    planned
+                }
+            } else planned
+        }
         if (loop != null && nextStreamReady(nextItem)) {
             val loopStartMs = (loop.out.loopStart * 1000).roundToLong()
             AppSettings.smartTransitionWindow.value = TransitionWindow(
@@ -2008,7 +2036,7 @@ class CrossfadeController(
         // [configuredFadeMs] at zero, and reading that as "turned off" would
         // end every Automix on its first tick.
         val settingSwitchedOff = if (smartFadeActive) {
-            !AppSettings.smartFadeEnabled.value
+            !smartOn()
         } else {
             configuredFadeMs() <= 0L
         }
@@ -2259,6 +2287,7 @@ class CrossfadeController(
         state: SmartAnalysis,
         plan: TransitionPlan,
         advanced: Boolean,
+        manual: ManualMix? = null,
     ) {
         if (!AppSettings.mixViewOpen.value || AppSettings.smartMixView.value != null) return
         mixPreviewAt = SystemClock.elapsedRealtime()
@@ -2282,7 +2311,7 @@ class CrossfadeController(
         val ids = currentItem.mediaId to nextItem.mediaId
         val key = "${ids.first}|${ids.second}|${round(outStart * 20)}|${round(outEnd * 20)}|${round(inStart * 20)}|" +
             "$beats|$currentAnalysing|$nextAnalysing|${currentAnalysis.bpm}|${nextAnalysis.bpm}|" +
-            "${currentAnalysis.key}|${nextAnalysis.key}|${plan.transitionStyle}|${plan.bassSwap}"
+            "${currentAnalysis.key}|${nextAnalysis.key}|${plan.transitionStyle}|${plan.bassSwap}|${manual?.hashCode()}"
         if (key == mixPreviewKey && mixPreviewIds == ids && AppSettings.smartMixPreview.value != null) return
         mixPreviewKey = key
 
@@ -2290,7 +2319,7 @@ class CrossfadeController(
         // ride them with. Swapped in and straight back out on this thread:
         // [render] is only read by the blend, and no blend is running while
         // there is a plan to preview.
-        val planned = renderFor(plan, advanced)
+        val planned = renderFor(plan, advanced, manual)
         val running = render
         render = planned
         val samples = MIX_VIEW_FADER_POINTS
@@ -2578,6 +2607,20 @@ class CrossfadeController(
     }
 
     /** Why [current] -> [next] can't be a loop mix right now, or null when it can. */
+    /** The pair whose mixed-playlist loop is being tried, and the one that failed and is not tried again. */
+    private var manualLoopPair: String? = null
+    private var manualLoopSkipped: String? = null
+
+    /** What a mixed playlist's loop needs of the output: the checks of [loopRefusalFor] that are about the hardware. */
+    private fun manualLoopRefusal(player: ExoPlayer): String? = when {
+        !LoopMixRenderer.available -> "this phone can't render loops"
+        AppSettings.playbackSpeed.value != 1f -> "playback speed is not 1x"
+        player.skipSilenceEnabled -> "skip silence is on"
+        loopPortOf(player)?.supportsLoopMix != true -> "this audio output can't play loops"
+        loopPortOf(standby()) == null -> "no standby output"
+        else -> null
+    }
+
     private fun loopRefusalFor(player: ExoPlayer, current: MediaItem, next: MediaItem, state: SmartAnalysis): String? = when {
         !LoopMixRenderer.available -> "no renderer"
         AppSettings.playbackSpeed.value != 1f -> "playback speed is not 1x"
@@ -2996,6 +3039,7 @@ class CrossfadeController(
     /** The loop mix isn't happening after all: the pair takes the planner's blend instead. */
     private fun loopFallBack(reason: String) {
         Log.d(TAG, "loop mix falls back to a blend: $reason")
+        manualLoopSkipped = manualLoopPair
         loopPlanned = null
         loopRefusal = reason
         loopBail(reason, settle = false)
@@ -3202,7 +3246,7 @@ class CrossfadeController(
 
     /** Still a next track, still playing, still switched on — by whichever setting armed this one. */
     private fun stillWorthFading(): Boolean {
-        val stillOn = if (smartFadeActive) AppSettings.smartFadeEnabled.value else configuredFadeMs() > 0L
+        val stillOn = if (smartFadeActive) smartOn() else configuredFadeMs() > 0L
         return stillOn && (outgoing ?: active()).hasNextMediaItem()
     }
 

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -101,9 +102,7 @@ fun MixedPlaylistScreen(
     contentPadding: PaddingValues,
     onBack: () -> Unit,
     onPlay: (songs: List<Song>, index: Int) -> Unit,
-    onPreview: (songs: List<Song>, index: Int, positionMs: Long) -> Unit,
-    onStopPreview: () -> Unit,
-    playhead: () -> Triple<String?, Long, Boolean>,
+    host: MixedPreviewHost,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -141,9 +140,20 @@ fun MixedPlaylistScreen(
     }
     BackHandler(enabled = editorPair == null) { onBack() }
     // The app's own page controls (search, sort, more) float above every page; they would sit on the editor's buttons.
-    DisposableEffect(editorPair != null) {
-        MixedUiState.setEditorOpen(editorPair != null)
-        onDispose { MixedUiState.setEditorOpen(false) }
+    // Opening the editor pauses the app's music; closing it puts the player back as it was.
+    val editorOpen = editorPair != null
+    DisposableEffect(editorOpen) {
+        MixedUiState.setEditorOpen(editorOpen)
+        val before = MixedPlayback.activeId()
+        if (editorOpen) host.enter()
+        onDispose {
+            MixedUiState.setEditorOpen(false)
+            if (editorOpen) {
+                host.exit()
+                MixedPlayback.setPreview(null, null, null)
+                MixedPlayback.activate(before)
+            }
+        }
     }
 
     val songCount by rememberUpdatedState(songs.size)
@@ -296,6 +306,7 @@ fun MixedPlaylistScreen(
                         val state = if (buildingNow) MixState.MIXING else transition.state
                         JoinPill(
                             state = state,
+                            composite = transition.mix?.composite,
                             ready = song.localUri != null && next.localUri != null,
                             onClick = {
                                 when (state) {
@@ -323,18 +334,15 @@ fun MixedPlaylistScreen(
             playlistId = playlist.id,
             from = a,
             to = b,
-            onClose = {
-                MixedPlayback.setPreview(null, null, null)
-                onStopPreview()
-                editing = null
-            },
-            onPreview = { positionMs, mix ->
+            onClose = { editing = null },
+            startPreview = { positionMs, mix ->
                 MixedPlayback.activate(playlist.id)
                 MixedPlayback.setPreview(a.videoId, b.videoId, mix)
-                onPreview(listOf(a, b), 0, positionMs)
+                host.start(listOf(a, b), positionMs)
             },
-            onStopPreview = onStopPreview,
-            playhead = playhead,
+            pausePreview = { host.pause() },
+            resumePreview = { host.resume() },
+            playhead = { host.playhead() },
         )
     }
 
@@ -567,14 +575,17 @@ private fun SongRow(
 
 /** The pill between two songs, on the thin line that links their artwork. */
 @Composable
-private fun JoinPill(state: MixState, ready: Boolean, onClick: () -> Unit) {
-    val line = MaterialTheme.colorScheme.outlineVariant
+private fun JoinPill(state: MixState, composite: String?, ready: Boolean, onClick: () -> Unit) {
+    // The line that joins the artwork is the pill's own colour.
+    val line = MaterialTheme.colorScheme.surfaceVariant
+    val isAuto = (state == MixState.AUTO || state == MixState.MANUAL) && (composite == null || composite == "auto")
     val label = when {
         !ready -> "Waiting for download"
         state == MixState.NONE -> "No mix"
         state == MixState.MIXING -> "Mixing…"
-        state == MixState.AUTO -> "Auto"
-        else -> "Manual"
+        isAuto -> "Auto"
+        composite == null || composite == PresetCatalog.CUSTOM -> "Custom"
+        else -> PresetCatalog.composites.firstOrNull { it.id == composite }?.label ?: "Custom"
     }
     val clickable = ready && state != MixState.MIXING
     Box(
@@ -597,21 +608,20 @@ private fun JoinPill(state: MixState, ready: Boolean, onClick: () -> Unit) {
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(26.dp).clip(RoundedCornerShape(6.dp)).background(
-                    when (state) {
-                        MixState.AUTO -> GREEN
-                        MixState.MANUAL -> Color(0xFF3DA5F4)
-                        else -> MaterialTheme.colorScheme.outline
-                    },
-                ),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (state == MixState.MIXING) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.Black)
-                } else {
-                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                }
+            when {
+                state == MixState.MIXING -> Box(
+                    Modifier.size(26.dp).clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.outline),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.Black) }
+                isAuto -> Box(
+                    Modifier.size(26.dp).clip(RoundedCornerShape(6.dp)).background(GREEN),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp)) }
+                state == MixState.NONE || !ready -> Box(
+                    Modifier.size(26.dp).clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.outline),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp)) }
+                else -> Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
             }
             Spacer(Modifier.width(10.dp))
             Text(label, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)

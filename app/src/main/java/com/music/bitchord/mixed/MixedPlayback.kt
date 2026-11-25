@@ -29,6 +29,15 @@ class MixedJoin(val playlistId: String, val transition: MixTransition)
  */
 object MixedPlayback {
     @Volatile private var active: String? = null
+
+    private val _loopNote = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Why the last loop could not be played on this output, or null when it could (or none was asked for). */
+    val loopNote: kotlinx.coroutines.flow.StateFlow<String?> = _loopNote
+
+    fun noteLoop(why: String?) {
+        _loopNote.value = why
+    }
     private var releaseBoost: (() -> Unit)? = null
 
     /** Called by the mixed playlist's page when it starts playing, and with null by anything that ends that. */

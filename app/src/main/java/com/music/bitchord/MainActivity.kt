@@ -3467,24 +3467,7 @@ private fun BitChordApp(
                                     onPlay = { songs, index ->
                                         playFrom(songs, index, QueueSource(page.title, PlaybackSourceType.BROWSE, page.browseId))
                                     },
-                                    onPreview = { songs, index, positionMs ->
-                                        playFrom(songs, index, QueueSource(page.title, PlaybackSourceType.BROWSE, page.browseId))
-                                        scope.launch {
-                                            // The queue is built asynchronously; wait for the song, then jump to the blend.
-                                            val wanted = songs.getOrNull(index)?.videoId
-                                            var tries = 0
-                                            while (tries < 40 && controller?.currentMediaItem?.mediaId != wanted) {
-                                                kotlinx.coroutines.delay(100)
-                                                tries++
-                                            }
-                                            controller?.seekTo(positionMs)
-                                            controller?.play()
-                                        }
-                                    },
-                                    onStopPreview = { controller?.pause() },
-                                    playhead = {
-                                        Triple(controller?.currentMediaItem?.mediaId, controller?.currentPosition ?: 0L, controller?.isPlaying ?: false)
-                                    },
+                                    host = remember { com.music.bitchord.mixed.MixedPreviewHost { controller } },
                                 )
                             } else DetailScreen(
                                 page = page,

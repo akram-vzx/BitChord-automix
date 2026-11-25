@@ -300,6 +300,8 @@ data class ManualMix(
     val inCueSec: Double = 0.0,
     val beatSec: Double = 0.5,
     val tempoMatch: Boolean = true,
+    /** Dragging pulls onto bar lines, whatever Beatmatching is doing. */
+    val barMagnet: Boolean = true,
     val incomingRate: Double = 1.0,
     val volumeOut: Curve = Curve.sampled { cos(it * PI.toFloat() / 2f) },
     val volumeIn: Curve = Curve.sampled { sin(it * PI.toFloat() / 2f) },
@@ -357,6 +359,7 @@ data class ManualMix(
         put("inCue", inCueSec)
         put("beat", beatSec)
         put("tempoMatch", tempoMatch)
+        put("barMagnet", barMagnet)
         put("rate", incomingRate)
         put("volOut", volumeOut.toJson())
         put("volIn", volumeIn.toJson())
@@ -388,6 +391,7 @@ data class ManualMix(
                 inCueSec = obj.optDouble("inCue", 0.0).coerceAtLeast(0.0),
                 beatSec = beat,
                 tempoMatch = obj.optBoolean("tempoMatch", true),
+                barMagnet = obj.optBoolean("barMagnet", true),
                 incomingRate = obj.optDouble("rate", 1.0).takeIf { it.isFinite() && it > 0.0 } ?: 1.0,
                 volumeOut = Curve.fromJson(obj.optJSONArray("volOut")) ?: d.volumeOut,
                 volumeIn = Curve.fromJson(obj.optJSONArray("volIn")) ?: d.volumeIn,
